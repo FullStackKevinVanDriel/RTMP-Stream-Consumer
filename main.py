@@ -2,7 +2,9 @@ import cv2
 import numpy as np
 import ffmpeg
 import subprocess
+import threading
 import time
+import json
 
 # Define RTMP Source
 rtmp_url = "rtmp://127.0.0.1:1935/live/webcam"
@@ -10,31 +12,51 @@ rtmp_url = "rtmp://127.0.0.1:1935/live/webcam"
 # Define Frame Size
 width, height = 1280, 720
 
-# Max time to wait for the stream (in seconds)
-max_wait_time = 60
-wait_interval = 1  # Time between checks
+# Store metadata globally
+metadata = {}
 
-# Open RTMP stream using FFmpeg and KEEP IT OPEN for 60 seconds
+def read_metadata(process):
+    """ Reads metadata from FFmpeg's stderr without interfering with video. """
+    global metadata
+    print("Starting metadata extraction...")
+
+    while True:
+        output = process.stderr.readline().decode().strip()
+        if not output:
+            break
+
+        # Look for metadata-related lines in stderr
+        if "Stream" in output or "Metadata" in output or "Duration" in output:
+            print("Metadata:", output)  # Print metadata updates
+            metadata["latest"] = output  # Store latest metadata info
+
+# Open RTMP stream using FFmpeg
+print("Waiting for RTMP stream...")
 start_time = time.time()
 
-while time.time() - start_time < max_wait_time:
+while True:
     try:
-        print("Waiting for RTMP stream...")
+        print("Starting FFmpeg stream...")
 
-        # Start FFmpeg process
+        # Start FFmpeg process with logging
         process = (
-            ffmpeg
-            .input(rtmp_url, f='flv', timeout=100)  # Keeps connection open
+            ffmpeg            
+            .input(rtmp_url, f='flv', timeout=100, rtbufsize='1024M')
             .output('pipe:', format='rawvideo', pix_fmt='bgr24')
-            .run_async(pipe_stdout=True, pipe_stderr=subprocess.PIPE)  # Capture stderr for debugging
+            .global_args('-loglevel', 'info', '-threads', 'auto')  # Auto-threading
+            .run_async(pipe_stdout=subprocess.PIPE, pipe_stderr=subprocess.PIPE)
         )
+
+        # Start metadata reader in a separate thread
+        metadata_thread = threading.Thread(target=read_metadata, args=(process,), daemon=True)
+        metadata_thread.start()
 
         raw_frame = process.stdout.read(width * height * 3)  # Read one frame
 
         if not raw_frame:
-            print("Stream attempted but no frame detected. Reopening listener in 1 second...")
+            print("Stream attempted but no frame detected. Retrying in 1 second...")
             process.terminate()
-            time.sleep(wait_interval)
+            time.sleep(1)
             continue
 
         print("Stream detected! Attempting playback...")
