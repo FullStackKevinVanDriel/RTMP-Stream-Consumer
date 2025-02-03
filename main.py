@@ -5,6 +5,7 @@ import subprocess
 import threading
 import time
 import json
+import socket
 
 # Define RTMP Source
 rtmp_url = "rtmp://127.0.0.1:1935/live/webcam"
@@ -18,7 +19,7 @@ metadata = {}
 def read_metadata(process):
     """ Reads metadata from FFmpeg's stderr without interfering with video. """
     global metadata
-    print("Starting metadata extraction...")
+    print("Waiting to read metadata from stream")
 
     while True:
         output = process.stderr.readline().decode().strip()
@@ -30,22 +31,39 @@ def read_metadata(process):
             print("Metadata:", output)  # Print metadata updates
             metadata["latest"] = output  # Store latest metadata info
 
+# Function to check if RTMP server is listening on port 1935
+def is_rtmp_ready(host="127.0.0.1", port=1935, timeout=1):
+    """Check if the RTMP server is ready to accept connections."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(timeout)
+        try:
+            sock.connect((host, port))
+            return True
+        except (socket.timeout, ConnectionRefusedError):
+            return False
+
 # Open RTMP stream using FFmpeg
-print("Waiting for RTMP stream...")
 start_time = time.time()
+startstream_executed = False
 
 while True:
     try:
-        print("Starting FFmpeg stream...")
-
         # Start FFmpeg process with logging
         process = (
             ffmpeg            
             .input(rtmp_url, f='flv', timeout=100, rtbufsize='1024M')
             .output('pipe:', format='rawvideo', pix_fmt='bgr24')
-            .global_args('-loglevel', 'info', '-threads', 'auto')  # Auto-threading
+            .global_args('-loglevel', 'verbose', '-threads', 'auto')  # Auto-threading
             .run_async(pipe_stdout=subprocess.PIPE, pipe_stderr=subprocess.PIPE)
-        )
+        )       
+         
+        if is_rtmp_ready():
+            print("Listening for stream on port 1935")
+            if not startstream_executed:
+                # Execute the startstream.py script
+                subprocess.Popen(["python", "startstream.py"])
+                startstream_executed = True
+  
 
         # Start metadata reader in a separate thread
         metadata_thread = threading.Thread(target=read_metadata, args=(process,), daemon=True)
@@ -67,6 +85,7 @@ while True:
         # Display the frame
         cv2.imshow("RTMP Stream", frame)
 
+        print("Playback started!")
         # Main loop to keep playing frames
         while True:
             raw_frame = process.stdout.read(width * height * 3)
