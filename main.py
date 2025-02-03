@@ -4,7 +4,6 @@ import ffmpeg
 import subprocess
 import time
 
-
 # Define RTMP Source
 rtmp_url = "rtmp://127.0.0.1:1935/live/webcam"
 
@@ -25,10 +24,10 @@ while time.time() - start_time < max_wait_time:
         # Start FFmpeg process
         process = (
             ffmpeg
-            .input(rtmp_url, f='flv',  timeout=100)  # Keeps connection open            
-             .output('pipe:', format='rawvideo', pix_fmt='bgr24')
-             .run_async(pipe_stdout=True, pipe_stderr=subprocess.PIPE)  # Capture stderr for debugging
-        )     
+            .input(rtmp_url, f='flv', timeout=100)  # Keeps connection open
+            .output('pipe:', format='rawvideo', pix_fmt='bgr24')
+            .run_async(pipe_stdout=True, pipe_stderr=subprocess.PIPE)  # Capture stderr for debugging
+        )
 
         raw_frame = process.stdout.read(width * height * 3)  # Read one frame
 
