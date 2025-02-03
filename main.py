@@ -16,8 +16,9 @@ width, height = 1280, 720
 # Store metadata globally
 metadata = {}
 
+
 def read_metadata(process):
-    """ Reads metadata from FFmpeg's stderr without interfering with video. """
+    """Reads metadata from FFmpeg's stderr without interfering with video."""
     global metadata
     print("Waiting to read metadata from stream")
 
@@ -31,6 +32,7 @@ def read_metadata(process):
             print("Metadata:", output)  # Print metadata updates
             metadata["latest"] = output  # Store latest metadata info
 
+
 # Function to check if RTMP server is listening on port 1935
 def is_rtmp_ready(host="127.0.0.1", port=1935, timeout=1):
     """Check if the RTMP server is ready to accept connections."""
@@ -42,6 +44,7 @@ def is_rtmp_ready(host="127.0.0.1", port=1935, timeout=1):
         except (socket.timeout, ConnectionRefusedError):
             return False
 
+
 # Open RTMP stream using FFmpeg
 start_time = time.time()
 startstream_executed = False
@@ -50,23 +53,23 @@ while True:
     try:
         # Start FFmpeg process with logging
         process = (
-            ffmpeg            
-            .input(rtmp_url, f='flv', timeout=100, rtbufsize='1024M')
-            .output('pipe:', format='rawvideo', pix_fmt='bgr24')
-            .global_args('-loglevel', 'verbose', '-threads', 'auto')  # Auto-threading
+            ffmpeg.input(rtmp_url, f="flv", timeout=100, rtbufsize="1024M")
+            .output("pipe:", format="rawvideo", pix_fmt="bgr24")
+            .global_args("-loglevel", "verbose", "-threads", "auto")  # Auto-threading
             .run_async(pipe_stdout=subprocess.PIPE, pipe_stderr=subprocess.PIPE)
-        )       
-         
+        )
+
         if is_rtmp_ready():
             print("Listening for stream on port 1935")
             if not startstream_executed:
                 # Execute the startstream.py script
                 subprocess.Popen(["python", "startstream.py"])
                 startstream_executed = True
-  
 
         # Start metadata reader in a separate thread
-        metadata_thread = threading.Thread(target=read_metadata, args=(process,), daemon=True)
+        metadata_thread = threading.Thread(
+            target=read_metadata, args=(process,), daemon=True
+        )
         metadata_thread.start()
 
         raw_frame = process.stdout.read(width * height * 3)  # Read one frame
@@ -96,7 +99,7 @@ while True:
             frame = np.frombuffer(raw_frame, np.uint8).reshape([height, width, 3])
             cv2.imshow("RTMP Stream", frame)
 
-            if cv2.waitKey(1) & 0xFF == ord('q'):  # Quit if 'q' is pressed
+            if cv2.waitKey(1) & 0xFF == ord("q"):  # Quit if 'q' is pressed
                 print("Stream manually stopped.")
                 break
 
@@ -106,7 +109,7 @@ while True:
     except Exception as e:
         print(f"Error: {e}")
         if process:
-            stderr_output = process.stderr.read().decode('utf-8')
+            stderr_output = process.stderr.read().decode("utf-8")
             print(f"FFmpeg stderr: {stderr_output}")
             process.terminate()
         break  # Exit the script on failure
