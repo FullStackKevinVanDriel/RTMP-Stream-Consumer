@@ -4,6 +4,7 @@ import ffmpeg
 import subprocess
 import time
 
+
 # Define RTMP Source
 rtmp_url = "rtmp://127.0.0.1:1935/live/webcam"
 
@@ -19,15 +20,15 @@ start_time = time.time()
 
 while time.time() - start_time < max_wait_time:
     try:
-        print("🔄 Waiting for RTMP stream...")
+        print("Waiting for RTMP stream...")
 
         # Start FFmpeg process
         process = (
             ffmpeg
-            .input(rtmp_url, f='flv', rtsp_transport='tcp', timeout=100)  # Keeps connection open
-            .output('pipe:', format='rawvideo', pix_fmt='bgr24')
-            .run_async(pipe_stdout=True, pipe_stderr=subprocess.DEVNULL)  # Suppresses errors but stays open
-        )
+            .input(rtmp_url, f='flv',  timeout=100)  # Keeps connection open            
+             .output('pipe:', format='rawvideo', pix_fmt='bgr24')
+             .run_async(pipe_stdout=True, pipe_stderr=subprocess.PIPE)  # Capture stderr for debugging
+        )     
 
         raw_frame = process.stdout.read(width * height * 3)  # Read one frame
 
@@ -64,7 +65,10 @@ while time.time() - start_time < max_wait_time:
 
     except Exception as e:
         print(f"Error: {e}")
-        process.terminate()
+        if process:
+            stderr_output = process.stderr.read().decode('utf-8')
+            print(f"FFmpeg stderr: {stderr_output}")
+            process.terminate()
         break  # Exit the script on failure
 
 # Cleanup
