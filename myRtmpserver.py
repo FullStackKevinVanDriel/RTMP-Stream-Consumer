@@ -106,14 +106,16 @@ class RTMPServer:
             logging.error(f"Handshake error: {e}")
 
     async def handle_amf_command(self, payload, writer):
-        """Parses and handles AMF commands from clients."""
+        """
+        Parses and handles AMF commands from clients.
+        """
         try:
             logging.debug(f"AMF Command Payload: {payload.hex()}")
 
             # Decode AMF
-            decoded_strings = self.decode_amf_payload(payload)
-            if decoded_strings:
-                command_name = decoded_strings[0]
+            decoded_values = self.decode_amf_payload(payload)
+            if decoded_values:
+                command_name = decoded_values[0]
                 logging.info(f"AMF Command Received: {command_name}")
 
                 if command_name == "connect":
@@ -121,9 +123,9 @@ class RTMPServer:
                 elif command_name == "createStream":
                     await self.handle_create_stream(writer)
                 elif command_name == "publish":
-                    await self.handle_publish(payload, writer)
+                    await self.handle_publish(decoded_values, writer)
                 elif command_name == "play":
-                    await self.handle_play(payload, writer)
+                    await self.handle_play(decoded_values, writer)
                 else:
                     logging.warning(f"Unknown AMF Command: {command_name}")
             else:
@@ -131,6 +133,37 @@ class RTMPServer:
 
         except Exception as e:
             logging.error(f"Error parsing AMF command: {e}")
+
+    async def handle_publish(self, decoded_values, writer):
+        """
+        Handles RTMP 'publish' request.
+        """
+        try:
+            if len(decoded_values) < 3:
+                logging.error("Invalid publish command format.")
+                return
+
+            stream_key = decoded_values[
+                2
+            ]  # Third element in AMF array is the stream key
+            logging.info(f"Publishing stream with key: {stream_key}")
+
+            self.streams[1] = stream_key  # Store stream key for this session
+
+            # Respond to the client with NetStream.Publish.Start
+            response = (
+                b"\x02\x00\x00\x00\x00\x00\x00\x00\x00\x06"  # RTMP Header
+                b"\x00\x03\x00\x00\x00\x00\x00\x00"  # Message Body (Success Response)
+            )
+            writer.write(response)
+            await writer.drain()
+
+            logging.info(f"Stream {stream_key} started successfully.")
+
+        except Exception as e:
+            logging.error(f"Error handling publish request: {e}")
+
+    # ...existing code...
 
     def decode_amf_payload(self, payload):
         """
@@ -147,6 +180,8 @@ class RTMPServer:
 
                 amf_type = payload[index]
                 index += 1
+
+                logging.debug(f"Decoding AMF type: {amf_type} at index: {index-1}")
 
                 if amf_type == 0x02:  # AMF string
                     if index + 2 > len(payload):
@@ -201,20 +236,23 @@ class RTMPServer:
 
     def decode_amf_object(self, payload, start_index):
         """
-        Decodes an AMF object from the payload.
+        Decodes an AMF object from the payload safely.
         """
         amf_object = {}
         index = start_index
 
         while index < len(payload):
             try:
-                if payload[index] == 0x09:  # Object end marker
+                # Detect Object End Marker (0x09)
+                if payload[index] == 0x09:
+                    logging.debug("AMF Object End Marker detected.")
                     index += 1
                     break
 
-                # Validate enough data for a property name (2 bytes for length)
+                # Validate enough data for property name length (2 bytes)
                 if index + 2 > len(payload):
-                    logging.warning("AMF object property name out of range")
+                    logging.warning("AMF object property name length out of range")
+                    logging.debug(f"Remaining payload: {payload[index:].hex()}")
                     break
 
                 str_length = struct.unpack(">H", payload[index : index + 2])[0]
@@ -222,7 +260,8 @@ class RTMPServer:
 
                 # Validate the string length does not exceed available data
                 if index + str_length > len(payload):
-                    logging.warning("AMF object property name out of range")
+                    logging.warning("AMF object property name length out of range")
+                    logging.debug(f"Remaining payload: {payload[index:].hex()}")
                     break
 
                 property_name = payload[index : index + str_length].decode(
@@ -232,7 +271,7 @@ class RTMPServer:
 
                 logging.debug(f"Decoded property name: {property_name}")
 
-                # Ensure we have at least 1 byte for type information
+                # Ensure there is at least 1 byte left for type information
                 if index >= len(payload):
                     logging.warning("AMF object truncated before reading type.")
                     break
@@ -283,7 +322,8 @@ class RTMPServer:
                 elif amf_type == 0x05:  # AMF null
                     property_value = None
 
-                elif amf_type == 0x09:  # Object end marker (should not appear here)
+                elif amf_type == 0x09:  # Object end marker
+                    logging.debug(f"AMF Object End detected at index {index}")
                     break
 
                 else:
@@ -297,6 +337,7 @@ class RTMPServer:
                 break
 
         return amf_object, index
+    # ...existing code...
 
     async def handle_connect(self, writer):
         """Responds to RTMP Connect requests."""
