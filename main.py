@@ -24,6 +24,8 @@ output_file = "C:/Users/kevin/OneDrive/Documents/CASTUS/output_video.mkv"
 
 # Store metadata globally
 metadata = {}
+metadata2 = {}
+
 
 # Function to read metadata from FFmpeg's stderr without interfering with video.
 def read_metadata(process):
@@ -35,9 +37,14 @@ def read_metadata(process):
             break
 
         # Look for metadata-related lines in stderr
-        if "Stream" in output or "Metadata" in output or "Duration" in output:
-            print("Metadata:", output)  # Print metadata updates
+        if output and "configuration: --enable-gpl --ena" not in output:
+            # print("Metadata:", output)  # Print metadata updates
+            if "Video:" in output:
+                print("Video:", output)  # Print video stream info
+            if "Audio:" in output:
+                print("Audio:", output)  # Print audio stream info
             metadata["latest"] = output  # Store latest metadata info
+
 
 # Function to check if RTMP server is listening on port 1935 and ready to accept connections.
 def is_rtmp_ready(host=connection_address, port=connection_port, timeout=1):
@@ -49,6 +56,7 @@ def is_rtmp_ready(host=connection_address, port=connection_port, timeout=1):
         except (socket.timeout, ConnectionRefusedError):
             return False
 
+
 # Function to handle cleanup on exit
 def cleanup():
     if process:
@@ -56,10 +64,12 @@ def cleanup():
     cv2.destroyAllWindows()
     print("RTMP stream closed.")
 
+
 # Register cleanup function to be called on exit
 def signal_handler(sig, frame):
     cleanup()
     sys.exit(0)
+
 
 signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
@@ -103,7 +113,7 @@ while True:
             raw_frame = process.stdout.read(frame_size)  # Read one frame
 
             if len(raw_frame) != frame_size:
-                print("Stream attempted but no frame detected. Retrying in 1 second...")
+                print("Waiting for audio/video stream...")
                 process.terminate()
                 time.sleep(1)
                 break
