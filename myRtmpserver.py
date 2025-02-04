@@ -67,6 +67,14 @@ class RTMPServer:
                     await self.handle_video_packet(payload)
                 elif msg_type == b"\x08":  # Audio Data
                     await self.handle_audio_packet(payload)
+                elif msg_type == b"\x01":  # Unkonwn message type
+                    # Handle RTMP message type 01 (Set Chunk Size)
+                    if len(payload) >= 4:
+                        chunk_size = struct.unpack(">I", payload[:4])[0]
+                        self.chunk_size = chunk_size
+                        logging.debug(f"Set Chunk Size to: {chunk_size}")
+                    else:
+                        logging.warning("Invalid Set Chunk Size message received.")
                 else:
                     logging.warning(f"Unhandled RTMP message type: {msg_type.hex()}")
 
@@ -105,6 +113,80 @@ class RTMPServer:
         except Exception as e:
             logging.error(f"Handshake error: {e}")
 
+    async def handle_video_packet(self, payload):
+        """
+        Handles RTMP video packets.
+        """
+        if len(payload) < 1:
+            logging.warning("Received empty video packet.")
+            return
+
+        frame_type = (payload[0] & 0xF0) >> 4  # First 4 bits = frame type
+        codec_id = payload[0] & 0x0F  # Last 4 bits = codec ID
+
+        frame_types = {
+            1: "Keyframe",
+            2: "Inter frame",
+            3: "Disposable",
+            4: "Generated",
+            5: "Command",
+        }
+        codec_types = {7: "H.264", 2: "Sorenson H.263", 4: "VP6"}
+
+        frame_type_str = frame_types.get(frame_type, "Unknown")
+        codec_str = codec_types.get(codec_id, f"Unknown ({codec_id})")
+
+        logging.info(f"Received Video Packet: {len(payload)} bytes")
+        logging.info(f"Frame Type: {frame_type_str}, Codec: {codec_str}")
+
+        # Example: Extract AVC sequence header (if applicable)
+        if codec_id == 7 and len(payload) > 1:
+            avc_packet_type = payload[1]
+            if avc_packet_type == 0:
+                logging.info("AVC Sequence Header detected.")
+
+    async def handle_audio_packet(self, payload):
+        """
+        Handles RTMP audio packets.
+        """
+        if len(payload) < 1:
+            logging.warning("Received empty audio packet.")
+            return
+
+        sound_format = (payload[0] & 0xF0) >> 4  # First 4 bits = Sound format
+        sound_rate = (payload[0] & 0x0C) >> 2  # Bits 2-3 = Sampling rate
+        sound_size = (
+            payload[0] & 0x02
+        ) >> 1  # Bit 1 = Sample size (0: 8-bit, 1: 16-bit)
+        sound_type = payload[0] & 0x01  # Bit 0 = Mono (0) or Stereo (1)
+
+        sound_formats = {10: "AAC", 0: "Linear PCM", 1: "ADPCM", 2: "MP3", 11: "Speex"}
+        sample_rates = {0: "5.5 kHz", 1: "11 kHz", 2: "22 kHz", 3: "44 kHz"}
+
+        sound_format_str = sound_formats.get(sound_format, f"Unknown ({sound_format})")
+        sample_rate_str = sample_rates.get(sound_rate, "Unknown")
+
+        logging.info(f"Received Audio Packet: {len(payload)} bytes")
+        logging.info(
+            f"Format: {sound_format_str}, Sample Rate: {sample_rate_str}, "
+            f"Size: {'16-bit' if sound_size else '8-bit'}, Channels: {'Stereo' if sound_type else 'Mono'}"
+        )
+
+        # Example: Detect AAC sequence header
+        if sound_format == 10 and len(payload) > 1:
+            aac_packet_type = payload[1]
+            if aac_packet_type == 0:
+                logging.info("AAC Sequence Header detected.")
+
+    def decode_amf_command(self, payload):
+        """Decodes an AMF command payload."""
+        # Implement your AMF decoding logic here
+        # This is a placeholder implementation
+        command_name = "connect"
+        transaction_id = 1
+        command_object = {}
+        return command_name, transaction_id, command_object
+
     async def handle_amf_command(self, payload, writer):
         """
         Parses and handles AMF commands from clients.
@@ -113,13 +195,16 @@ class RTMPServer:
             logging.debug(f"AMF Command Payload: {payload.hex()}")
 
             # Decode AMF
+            command_name, transaction_id, command_object = self.decode_amf_command(
+                payload
+            )
             decoded_values = self.decode_amf_payload(payload)
             if decoded_values:
                 command_name = decoded_values[0]
                 logging.info(f"AMF Command Received: {command_name}")
 
                 if command_name == "connect":
-                    await self.handle_connect(writer)
+                    await self.handle_connect(transaction_id, command_object, writer)
                 elif command_name == "createStream":
                     await self.handle_create_stream(writer)
                 elif command_name == "publish":
@@ -163,8 +248,6 @@ class RTMPServer:
         except Exception as e:
             logging.error(f"Error handling publish request: {e}")
 
-    # ...existing code...
-
     def decode_amf_payload(self, payload):
         """
         Decodes multiple AMF encoded values from the payload.
@@ -172,6 +255,7 @@ class RTMPServer:
         """
         decoded_values = []
         index = 0
+
         while index < len(payload):
             try:
                 if index >= len(payload):  # Prevent out-of-bounds access
@@ -215,8 +299,9 @@ class RTMPServer:
                     index += 1
 
                 elif amf_type == 0x03:  # AMF object
-                    amf_object, index = self.decode_amf_object(payload, index)
+                    amf_object, new_index = self.decode_amf_object(payload, index)
                     decoded_values.append(amf_object)
+                    index = new_index
 
                 elif amf_type == 0x05:  # AMF null
                     decoded_values.append(None)
@@ -230,6 +315,7 @@ class RTMPServer:
 
             except (struct.error, UnicodeDecodeError, IndexError) as e:
                 logging.error(f"Failed to decode AMF data at index {index}: {e}")
+                logging.debug(f"Data causing error: {payload[index:].hex()}")
                 break
 
         return decoded_values
@@ -258,7 +344,7 @@ class RTMPServer:
                 str_length = struct.unpack(">H", payload[index : index + 2])[0]
                 index += 2
 
-                # Validate the string length does not exceed available data
+                # Validate string length does not exceed available data
                 if index + str_length > len(payload):
                     logging.warning("AMF object property name length out of range")
                     logging.debug(f"Remaining payload: {payload[index:].hex()}")
@@ -337,17 +423,64 @@ class RTMPServer:
                 break
 
         return amf_object, index
-    # ...existing code...
 
-    async def handle_connect(self, writer):
+    async def handle_connect(self, transaction_id, command_object, writer):
         """Responds to RTMP Connect requests."""
-        response = (
-            b"\x02\x00\x00\x00\x00\x00\x00\x00\x00\x06"
-            b"\x00\x03\x00\x00\x00\x00\x00\x00"
-        )
-        writer.write(response)
-        await writer.drain()
-        logging.info("Sent RTMP connect response.")
+        try:
+            # Create the response body
+            response_body = (
+                b"\x02"  # AMF0 String
+                + struct.pack(">H", len("_result"))
+                + b"_result"  # '_result'
+                + b"\x00\x3f\xf0\x00\x00\x00\x00\x00\x00"  # Transaction ID 1 (double)
+                + b"\x03"  # AMF0 Object
+                + b"\x00\x03"
+                + b"fms"
+                + b"\x02"
+                + struct.pack(">H", len("FMS/3,0,1,123"))
+                + b"FMS/3,0,1,123"  # 'fms' : 'FMS/3,0,1,123'
+                + b"\x00\x04"
+                + b"capabilities"
+                + b"\x00\x40\x00\x00\x00\x00\x00\x00\x00"  # 'capabilities' : 0.0 (double)
+                + b"\x00\x00\x09"  # End of object
+                + b"\x03"  # AMF0 Object
+                + b"\x00\x04"
+                + b"level"
+                + b"\x02"
+                + struct.pack(">H", len("status"))
+                + b"status"  # 'level' : 'status'
+                + b"\x00\x07"
+                + b"code"
+                + b"\x02"
+                + struct.pack(">H", len("NetConnection.Connect.Success"))
+                + b"NetConnection.Connect.Success"  # 'code' : 'NetConnection.Connect.Success'
+                + b"\x00\x06"
+                + b"description"
+                + b"\x02"
+                + struct.pack(">H", len("Connection succeeded."))
+                + b"Connection succeeded."  # 'description' : 'Connection succeeded.'
+                + b"\x00\x04"
+                + b"objectEncoding"
+                + b"\x00\x40\x00\x00\x00\x00\x00\x00\x00"  # 'objectEncoding' : 0.0 (double)
+                + b"\x00\x00\x09"  # End of object
+            )
+
+            # Create the response header
+            response_header = (
+                b"\x02\x00\x00\x00\x00\x00\x00\x00\x00"  # Chunk Stream ID and Timestamp
+                + struct.pack(">I", len(response_body))  # Message Length
+                + b"\x14"  # Message Type ID (AMF Command)
+                + b"\x00\x00\x00\x00"  # Message Stream ID
+            )
+
+            # Combine header and body
+            response = response_header + response_body
+
+            writer.write(response)
+            await writer.drain()
+            logging.info("Sent RTMP connect response.")
+        except Exception as e:
+            logging.error(f"Failed to handle connect: {e}")
 
     async def start(self):
         """Starts the RTMP server."""
