@@ -52,7 +52,7 @@ time.sleep(3)
 
 # Check if FFmpeg started successfully
 if ffmpeg_process.poll() is None:
-    print("Webcam stream successfully started!")
+    print("Webcam stream successfully started. Wait for playback...")
 else:
     print("Failed to start webcam stream. Check device settings.")
 

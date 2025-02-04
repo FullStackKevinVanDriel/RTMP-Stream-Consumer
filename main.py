@@ -6,6 +6,8 @@ import threading
 import time
 import json
 import socket
+import signal
+import sys
 
 # Define RTMP Source
 rtmp_url = "rtmp://127.0.0.1:1935/live/webcam"
@@ -45,9 +47,29 @@ def is_rtmp_ready(host="127.0.0.1", port=1935, timeout=1):
             return False
 
 
+# Function to handle cleanup on exit
+def cleanup():
+    if process:
+        process.terminate()
+    if startstream_process:
+        startstream_process.terminate()
+    cv2.destroyAllWindows()
+    print("RTMP stream closed.")
+
+
+# Register cleanup function to be called on exit
+def signal_handler(sig, frame):
+    cleanup()
+    sys.exit(0)
+
+
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
+
 # Open RTMP stream using FFmpeg
 start_time = time.time()
 startstream_executed = False
+startstream_process = None
 
 while True:
     try:
@@ -55,7 +77,7 @@ while True:
         process = (
             ffmpeg.input(rtmp_url, f="flv", timeout=100, rtbufsize="1024M")
             .output("pipe:", format="rawvideo", pix_fmt="bgr24")
-            .global_args("-loglevel", "verbose", "-threads", "auto")  # Auto-threading
+            .global_args("-loglevel", "verbose")
             .run_async(pipe_stdout=subprocess.PIPE, pipe_stderr=subprocess.PIPE)
         )
 
@@ -75,7 +97,7 @@ while True:
         raw_frame = process.stdout.read(width * height * 3)  # Read one frame
 
         if not raw_frame:
-            print("Stream attempted but no frame detected. Retrying in 1 second...")
+            # Go back around if the stream is not yet ready
             process.terminate()
             time.sleep(1)
             continue
@@ -115,5 +137,4 @@ while True:
         break  # Exit the script on failure
 
 # Cleanup
-cv2.destroyAllWindows()
-print("RTMP stream closed.")
+cleanup()
