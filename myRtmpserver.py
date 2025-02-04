@@ -4,12 +4,9 @@ import logging
 
 logging.basicConfig(level=logging.DEBUG)
 
-addresshost = "127.0.0.1"
-addressport = 1935
-
 
 class RTMPServer:
-    def __init__(self, host=addresshost, port=addressport):
+    def __init__(self, host="127.0.0.1", port=1935):
         self.host = host
         self.port = port
         self.streams = {}
@@ -36,7 +33,7 @@ class RTMPServer:
                     f"Chunk Format: {chunk_format}, Chunk Stream ID: {chunk_stream_id}"
                 )
 
-                # Read RTMP Message Header
+                # Read RTMP Message Header (timestamp, message length, message type, stream ID)
                 timestamp_bytes = await reader.read(3)
                 timestamp = int.from_bytes(timestamp_bytes, "big")
 
@@ -45,17 +42,22 @@ class RTMPServer:
 
                 msg_type = await reader.read(1)
                 stream_id_bytes = await reader.read(4)
+                stream_id = int.from_bytes(stream_id_bytes, "little")
 
                 if not msg_type:
                     logging.warning("Invalid RTMP message: no type found.")
                     break
 
                 logging.debug(
-                    f"RTMP Message Type: {msg_type.hex()}, Payload Size: {payload_size}"
+                    f"RTMP Message Type: {msg_type.hex()}, Payload Size: {payload_size}, Stream ID: {stream_id}"
                 )
 
                 # Read Payload Data
                 payload = await reader.read(payload_size)
+                if not payload:
+                    logging.warning("Payload missing.")
+                    break
+
                 logging.debug(f"Received payload: {payload.hex()}")
 
                 # Handle Different RTMP Messages
@@ -73,9 +75,7 @@ class RTMPServer:
                 break
 
     async def rtmp_handshake(self, reader, writer):
-        """
-        Implements RTMP Handshake: C0, C1, C2 exchange.
-        """
+        """Implements RTMP Handshake: C0, C1, C2 exchange."""
         try:
             c0_c1 = await reader.read(1537)  # C0 (1 byte) + C1 (1536 bytes)
             if not c0_c1:
@@ -106,13 +106,11 @@ class RTMPServer:
             logging.error(f"Handshake error: {e}")
 
     async def handle_amf_command(self, payload, writer):
-        """
-        Parses and handles AMF commands from clients.
-        """
+        """Parses and handles AMF commands from clients."""
         try:
             logging.debug(f"AMF Command Payload: {payload.hex()}")
-            
-            # Attempt to decode multiple AMF strings from the payload
+
+            # Decode AMF
             decoded_strings = self.decode_amf_payload(payload)
             if decoded_strings:
                 command_name = decoded_strings[0]
@@ -136,38 +134,172 @@ class RTMPServer:
 
     def decode_amf_payload(self, payload):
         """
-        Decodes multiple AMF encoded strings from the payload.
+        Decodes multiple AMF encoded values from the payload.
+        Handles AMF strings, numbers, booleans, and objects properly.
         """
-        decoded_strings = []
+        decoded_values = []
         index = 0
         while index < len(payload):
             try:
-                str_length = struct.unpack(">H", payload[index:index+2])[0]
-                amf_string = payload[index+2:index+2+str_length].decode("utf-8")
-                decoded_strings.append(amf_string)
-                index += 2 + str_length
-            except (struct.error, UnicodeDecodeError) as e:
-                logging.error(f"Failed to decode AMF string at index {index}: {e}")
-                logging.debug(f"Data causing error: {payload[index:].hex()}")
+                if index >= len(payload):  # Prevent out-of-bounds access
+                    logging.warning("AMF payload out of range before reading type")
+                    break
+
+                amf_type = payload[index]
+                index += 1
+
+                if amf_type == 0x02:  # AMF string
+                    if index + 2 > len(payload):
+                        logging.warning("AMF string out of range")
+                        break
+                    str_length = struct.unpack(">H", payload[index : index + 2])[0]
+                    index += 2
+                    if index + str_length > len(payload):
+                        logging.warning("AMF string out of range")
+                        break
+                    amf_string = payload[index : index + str_length].decode(
+                        "utf-8", errors="ignore"
+                    )
+                    decoded_values.append(amf_string)
+                    index += str_length
+
+                elif amf_type == 0x00:  # AMF number
+                    if index + 8 > len(payload):
+                        logging.warning("AMF number out of range")
+                        break
+                    amf_number = struct.unpack(">d", payload[index : index + 8])[0]
+                    decoded_values.append(amf_number)
+                    index += 8
+
+                elif amf_type == 0x01:  # AMF boolean
+                    if index >= len(payload):
+                        logging.warning("AMF boolean out of range")
+                        break
+                    amf_boolean = bool(payload[index])
+                    decoded_values.append(amf_boolean)
+                    index += 1
+
+                elif amf_type == 0x03:  # AMF object
+                    amf_object, index = self.decode_amf_object(payload, index)
+                    decoded_values.append(amf_object)
+
+                elif amf_type == 0x05:  # AMF null
+                    decoded_values.append(None)
+
+                elif amf_type == 0x09:  # Object end marker
+                    break
+
+                else:
+                    logging.warning(f"Unhandled AMF type: {amf_type}")
+                    break
+
+            except (struct.error, UnicodeDecodeError, IndexError) as e:
+                logging.error(f"Failed to decode AMF data at index {index}: {e}")
                 break
-        return decoded_strings
 
-    async def handle_video_packet(self, payload):
-        """
-        Handles RTMP video data packets.
-        """
-        logging.info(f"Received Video Packet: {len(payload)} bytes")
+        return decoded_values
 
-    async def handle_audio_packet(self, payload):
+    def decode_amf_object(self, payload, start_index):
         """
-        Handles RTMP audio data packets.
+        Decodes an AMF object from the payload.
         """
-        logging.info(f"Received Audio Packet: {len(payload)} bytes")
+        amf_object = {}
+        index = start_index
+
+        while index < len(payload):
+            try:
+                if payload[index] == 0x09:  # Object end marker
+                    index += 1
+                    break
+
+                # Validate enough data for a property name (2 bytes for length)
+                if index + 2 > len(payload):
+                    logging.warning("AMF object property name out of range")
+                    break
+
+                str_length = struct.unpack(">H", payload[index : index + 2])[0]
+                index += 2
+
+                # Validate the string length does not exceed available data
+                if index + str_length > len(payload):
+                    logging.warning("AMF object property name out of range")
+                    break
+
+                property_name = payload[index : index + str_length].decode(
+                    "utf-8", errors="ignore"
+                )
+                index += str_length
+
+                logging.debug(f"Decoded property name: {property_name}")
+
+                # Ensure we have at least 1 byte for type information
+                if index >= len(payload):
+                    logging.warning("AMF object truncated before reading type.")
+                    break
+
+                amf_type = payload[index]
+                index += 1
+
+                logging.debug(f"Property type: {amf_type}")
+
+                # Read property value based on its type
+                if amf_type == 0x02:  # AMF string
+                    if index + 2 > len(payload):
+                        logging.warning(
+                            f"AMF string property '{property_name}' out of range"
+                        )
+                        break
+                    str_length = struct.unpack(">H", payload[index : index + 2])[0]
+                    index += 2
+                    if index + str_length > len(payload):
+                        logging.warning(f"AMF string '{property_name}' out of range")
+                        break
+                    property_value = payload[index : index + str_length].decode(
+                        "utf-8", errors="ignore"
+                    )
+                    index += str_length
+
+                elif amf_type == 0x00:  # AMF number
+                    if index + 8 > len(payload):
+                        logging.warning(
+                            f"AMF number property '{property_name}' out of range"
+                        )
+                        break
+                    property_value = struct.unpack(">d", payload[index : index + 8])[0]
+                    index += 8
+
+                elif amf_type == 0x01:  # AMF boolean
+                    if index >= len(payload):
+                        logging.warning(
+                            f"AMF boolean property '{property_name}' out of range"
+                        )
+                        break
+                    property_value = bool(payload[index])
+                    index += 1
+
+                elif amf_type == 0x03:  # Nested AMF object
+                    property_value, index = self.decode_amf_object(payload, index)
+
+                elif amf_type == 0x05:  # AMF null
+                    property_value = None
+
+                elif amf_type == 0x09:  # Object end marker (should not appear here)
+                    break
+
+                else:
+                    logging.warning(f"Unhandled AMF type in object: {amf_type}")
+                    break
+
+                amf_object[property_name] = property_value
+
+            except (struct.error, UnicodeDecodeError, IndexError) as e:
+                logging.error(f"Failed to decode AMF object at index {index}: {e}")
+                break
+
+        return amf_object, index
 
     async def handle_connect(self, writer):
-        """
-        Responds to RTMP Connect requests.
-        """
+        """Responds to RTMP Connect requests."""
         response = (
             b"\x02\x00\x00\x00\x00\x00\x00\x00\x00\x06"
             b"\x00\x03\x00\x00\x00\x00\x00\x00"
@@ -176,51 +308,8 @@ class RTMPServer:
         await writer.drain()
         logging.info("Sent RTMP connect response.")
 
-    async def handle_create_stream(self, writer):
-        """
-        Responds to createStream request.
-        """
-        stream_id = 1  # Default to stream ID 1
-        self.streams[stream_id] = None
-
-        response = b"\x02\x00\x00\x00\x00\x00\x00\x00\x00\x05" + struct.pack(
-            ">I", stream_id
-        )
-        writer.write(response)
-        await writer.drain()
-        logging.info(f"Stream {stream_id} created.")
-
-    async def handle_publish(self, payload, writer):
-        """
-        Handles an RTMP publish request.
-        """
-        stream_key = self.decode_amf_string(payload[2:])
-        logging.info(f"Publishing stream with key: {stream_key}")
-        self.streams[1] = stream_key
-
-        response = b"\x02\x00\x00\x00\x00\x00\x00\x00\x00\x05" + struct.pack(">I", 1)
-        writer.write(response)
-        await writer.drain()
-        logging.info("Sent publish confirmation.")
-
-    def decode_amf_string(self, data):
-        """
-        Decodes an AMF encoded string.
-        """
-        try:
-            str_length = struct.unpack(">H", data[:2])[0]
-            amf_string = data[2 : 2 + str_length].decode("utf-8")
-            logging.debug(f"Decoded AMF string: {amf_string}")
-            return amf_string
-        except (struct.error, UnicodeDecodeError) as e:
-            logging.error(f"Failed to decode AMF string: {e}")
-            logging.debug(f"Data causing error: {data.hex()}")
-            return ""
-
     async def start(self):
-        """
-        Starts the RTMP server.
-        """
+        """Starts the RTMP server."""
         server = await asyncio.start_server(self.handle_client, self.host, self.port)
         logging.info(f"RTMP Server listening on {self.host}:{self.port}")
 
