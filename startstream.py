@@ -1,8 +1,21 @@
 import subprocess
 import time
+import argparse
+
+# Parse command-line arguments
+parser = argparse.ArgumentParser(
+    description="Start streaming from webcam to RTMP server."
+)
+parser.add_argument(
+    "--rtmp_url",
+    type=str,
+    default="rtmp://127.0.0.1:1935/live/webcam",
+    help="RTMP URL to stream to",
+)
+args = parser.parse_args()
 
 # Define the RTMP Stream URL
-rtmp_url = "rtmp://127.0.0.1:1935/live/webcam"
+rtmp_url = args.rtmp_url
 
 # Define FFmpeg command to stream from webcam
 ffmpeg_command = [
@@ -52,7 +65,7 @@ time.sleep(3)
 
 # Check if FFmpeg started successfully
 if ffmpeg_process.poll() is None:
-    print("Webcam stream successfully started. Wait for playback...")
+    print("Webcam stream successfully started. Wait for stream detection...")
 else:
     print("Failed to start webcam stream. Check device settings.")
 

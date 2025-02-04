@@ -10,7 +10,10 @@ import signal
 import sys
 
 # Define RTMP Source
-rtmp_url = "rtmp://127.0.0.1:1935/live/webcam"
+connection_address = "127.0.0.1"
+connection_port = 1935
+connection_keys = "live/webcam"
+rtmp_url = f"rtmp://{connection_address}:{connection_port}/{connection_keys}"
 
 # Define Frame Size
 width, height = 1280, 720
@@ -19,10 +22,9 @@ width, height = 1280, 720
 metadata = {}
 
 
+# Function to read metadata from FFmpeg's stderr without interfering with video.
 def read_metadata(process):
-    """Reads metadata from FFmpeg's stderr without interfering with video."""
     global metadata
-    print("Waiting to read metadata from stream")
 
     while True:
         output = process.stderr.readline().decode().strip()
@@ -35,9 +37,8 @@ def read_metadata(process):
             metadata["latest"] = output  # Store latest metadata info
 
 
-# Function to check if RTMP server is listening on port 1935
-def is_rtmp_ready(host="127.0.0.1", port=1935, timeout=1):
-    """Check if the RTMP server is ready to accept connections."""
+# Function to check if RTMP server is listening on port 1935 and ready to accept connections.
+def is_rtmp_ready(host=connection_address, port=connection_port, timeout=1):
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.settimeout(timeout)
         try:
@@ -81,12 +82,10 @@ while True:
             .run_async(pipe_stdout=subprocess.PIPE, pipe_stderr=subprocess.PIPE)
         )
 
-        if is_rtmp_ready():
-            print("Listening for stream on port 1935")
-            if not startstream_executed:
-                # Execute the startstream.py script
-                subprocess.Popen(["python", "startstream.py"])
-                startstream_executed = True
+        if is_rtmp_ready() and not startstream_executed:
+            # Execute the startstream.py script
+            subprocess.Popen(["python", "startstream.py", "--rtmp_url", rtmp_url])
+            startstream_executed = True
 
         # Start metadata reader in a separate thread
         metadata_thread = threading.Thread(
@@ -134,7 +133,7 @@ while True:
             stderr_output = process.stderr.read().decode("utf-8")
             print(f"FFmpeg stderr: {stderr_output}")
             process.terminate()
-        break  # Exit the script on failure
+        break  # Exit the script on failureq
 
 # Cleanup
 cleanup()
