@@ -111,22 +111,46 @@ class RTMPServer:
         """
         try:
             logging.debug(f"AMF Command Payload: {payload.hex()}")
-            command_name = self.decode_amf_string(payload)
-            logging.info(f"AMF Command Received: {command_name}")
+            
+            # Attempt to decode multiple AMF strings from the payload
+            decoded_strings = self.decode_amf_payload(payload)
+            if decoded_strings:
+                command_name = decoded_strings[0]
+                logging.info(f"AMF Command Received: {command_name}")
 
-            if command_name == "connect":
-                await self.handle_connect(writer)
-            elif command_name == "createStream":
-                await self.handle_create_stream(writer)
-            elif command_name == "publish":
-                await self.handle_publish(payload, writer)
-            elif command_name == "play":
-                await self.handle_play(payload, writer)
+                if command_name == "connect":
+                    await self.handle_connect(writer)
+                elif command_name == "createStream":
+                    await self.handle_create_stream(writer)
+                elif command_name == "publish":
+                    await self.handle_publish(payload, writer)
+                elif command_name == "play":
+                    await self.handle_play(payload, writer)
+                else:
+                    logging.warning(f"Unknown AMF Command: {command_name}")
             else:
-                logging.warning(f"Unknown AMF Command: {command_name}")
+                logging.warning("No valid AMF command found in payload.")
 
         except Exception as e:
             logging.error(f"Error parsing AMF command: {e}")
+
+    def decode_amf_payload(self, payload):
+        """
+        Decodes multiple AMF encoded strings from the payload.
+        """
+        decoded_strings = []
+        index = 0
+        while index < len(payload):
+            try:
+                str_length = struct.unpack(">H", payload[index:index+2])[0]
+                amf_string = payload[index+2:index+2+str_length].decode("utf-8")
+                decoded_strings.append(amf_string)
+                index += 2 + str_length
+            except (struct.error, UnicodeDecodeError) as e:
+                logging.error(f"Failed to decode AMF string at index {index}: {e}")
+                logging.debug(f"Data causing error: {payload[index:].hex()}")
+                break
+        return decoded_strings
 
     async def handle_video_packet(self, payload):
         """
@@ -185,9 +209,12 @@ class RTMPServer:
         """
         try:
             str_length = struct.unpack(">H", data[:2])[0]
-            return data[2 : 2 + str_length].decode("utf-8")
+            amf_string = data[2 : 2 + str_length].decode("utf-8")
+            logging.debug(f"Decoded AMF string: {amf_string}")
+            return amf_string
         except (struct.error, UnicodeDecodeError) as e:
             logging.error(f"Failed to decode AMF string: {e}")
+            logging.debug(f"Data causing error: {data.hex()}")
             return ""
 
     async def start(self):
