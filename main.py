@@ -8,7 +8,7 @@ import json
 import socket
 import sys
 
-# Define Video/Audio Sources
+# Configure Video/Audio Sources
 video_device = "1080P Pro Stream"
 audio_device = "Microphone (1080P Pro Stream)"
 

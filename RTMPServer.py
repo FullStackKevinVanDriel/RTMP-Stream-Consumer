@@ -7,11 +7,14 @@ import subprocess
 
 logging.basicConfig(level=logging.DEBUG)
 
-localhost = "127.0.0.1"
-localport = 1935
+# Configure Video/Audio Sources; let FFMpeg automatically launch stream or use OBS Studio seperately
 video_device = "1080P Pro Stream"
 audio_device = "Microphone (1080P Pro Stream)"
 launchStreamWithFFMPEG = True
+
+# RTMP Server Settings
+localhost = "127.0.0.1"
+localport = 1935
 
 
 class RTMPServer:
