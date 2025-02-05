@@ -29,54 +29,82 @@ class RTMPServer:
                 chunk_format = (basic_header[0] & 0b11000000) >> 6
                 chunk_stream_id = basic_header[0] & 0b00111111
 
+                if chunk_stream_id == 0:
+                    # 2-byte chunk stream ID
+                    chunk_stream_id = 64 + (await reader.read(1))[0]
+                elif chunk_stream_id == 1:
+                    # 3-byte chunk stream ID
+                    chunk_stream_id = (
+                        64 + (await reader.read(1))[0] + (await reader.read(1))[0] * 256
+                    )
+
                 logging.debug(
                     f"Chunk Format: {chunk_format}, Chunk Stream ID: {chunk_stream_id}"
                 )
 
-                # Read RTMP Message Header (timestamp, message length, message type, stream ID)
-                timestamp_bytes = await reader.read(3)
-                timestamp = int.from_bytes(timestamp_bytes, "big")
-
-                payload_size_bytes = await reader.read(3)
-                payload_size = int.from_bytes(payload_size_bytes, "big")
-
-                msg_type = await reader.read(1)
-                stream_id_bytes = await reader.read(4)
-                stream_id = int.from_bytes(stream_id_bytes, "little")
-
-                if not msg_type:
-                    logging.warning("Invalid RTMP message: no type found.")
-                    break
+                # Read the message header based on the format
+                if chunk_format == 0:
+                    # 11-byte header
+                    message_header = await reader.read(11)
+                    timestamp = int.from_bytes(message_header[0:3], "big")
+                    payload_size = int.from_bytes(message_header[3:6], "big")
+                    msg_type = message_header[6:7]
+                    stream_id = int.from_bytes(message_header[7:11], "little")
+                elif chunk_format == 1:
+                    # 7-byte header
+                    message_header = await reader.read(7)
+                    timestamp = int.from_bytes(message_header[0:3], "big")
+                    payload_size = int.from_bytes(message_header[3:6], "big")
+                    msg_type = message_header[6:7]
+                    stream_id = None  # Stream ID is not present in this format
+                elif chunk_format == 2:
+                    # 3-byte header
+                    message_header = await reader.read(3)
+                    timestamp = int.from_bytes(message_header[0:3], "big")
+                    payload_size = None  # Payload size is not present in this format
+                    msg_type = None  # Message type is not present in this format
+                    stream_id = None  # Stream ID is not present in this format
+                elif chunk_format == 3:
+                    # 0-byte header (no header)
+                    timestamp = None
+                    payload_size = None
+                    msg_type = None
+                    stream_id = None
 
                 logging.debug(
-                    f"RTMP Message Type: {msg_type.hex()}, Payload Size: {payload_size}, Stream ID: {stream_id}"
+                    f"RTMP Message Type: {msg_type.hex() if msg_type else 'N/A'}, Payload Size: {payload_size}, Stream ID: {stream_id}"
                 )
 
                 # Read Payload Data
-                payload = await reader.read(payload_size)
-                if not payload:
-                    logging.warning("Payload missing.")
-                    break
+                if payload_size:
+                    payload = await reader.read(payload_size)
+                    if not payload:
+                        logging.warning("Payload missing.")
+                        break
 
-                logging.debug(f"Received payload: {payload.hex()}")
+                    logging.debug(f"Received payload: {payload.hex()}")
 
-                # Handle Different RTMP Messages
-                if msg_type == b"\x14":  # AMF Command (connect, publish, play, etc.)
-                    await self.handle_amf_command(payload, writer)
-                elif msg_type == b"\x09":  # Video Data
-                    await self.handle_video_packet(payload)
-                elif msg_type == b"\x08":  # Audio Data
-                    await self.handle_audio_packet(payload)
-                elif msg_type == b"\x01":  # Unkonwn message type
-                    # Handle RTMP message type 01 (Set Chunk Size)
-                    if len(payload) >= 4:
-                        chunk_size = struct.unpack(">I", payload[:4])[0]
-                        self.chunk_size = chunk_size
-                        logging.debug(f"Set Chunk Size to: {chunk_size}")
+                    # Handle Different RTMP Messages
+                    if (
+                        msg_type == b"\x14"
+                    ):  # AMF Command (connect, publish, play, etc.)
+                        await self.handle_amf_command(payload, writer)
+                    elif msg_type == b"\x09":  # Video Data
+                        await self.handle_video_packet(payload)
+                    elif msg_type == b"\x08":  # Audio Data
+                        await self.handle_audio_packet(payload)
+                    elif msg_type == b"\x01":  # Unknown message type
+                        # Handle RTMP message type 01 (Set Chunk Size)
+                        if len(payload) >= 4:
+                            chunk_size = struct.unpack(">I", payload[:4])[0]
+                            self.chunk_size = chunk_size
+                            logging.debug(f"Set Chunk Size to: {chunk_size}")
+                        else:
+                            logging.warning("Invalid Set Chunk Size message received.")
                     else:
-                        logging.warning("Invalid Set Chunk Size message received.")
-                else:
-                    logging.warning(f"Unhandled RTMP message type: {msg_type.hex()}")
+                        logging.warning(
+                            f"Unhandled RTMP message type: {msg_type.hex() if msg_type else 'N/A'}"
+                        )
 
             except Exception as e:
                 logging.error(f"Error handling client: {e}")
@@ -235,17 +263,20 @@ class RTMPServer:
 
     async def handle_publish(self, decoded_values, writer):
         """
-        Handles RTMP 'publish' request properly.
+        Handles RTMP 'publish' requests properly.
         """
         try:
             if len(decoded_values) < 3:
                 logging.error("Invalid publish command format.")
                 return
 
-            stream_key = decoded_values[2]  # Third element is stream key
-            logging.info(f"Publishing stream with key: {stream_key}")
+            # Extract the application and stream key
+            app_name = decoded_values[1] if len(decoded_values) > 1 else "default"
+            stream_key = decoded_values[2]  # Third element is the actual stream key
 
-            self.streams[1] = stream_key  # Store stream key for this session
+            logging.info(f"Publishing stream: app={app_name}, key={stream_key}")
+
+            self.streams[stream_key] = {"app": app_name}  # Store stream info
 
             # Respond to the client with NetStream.Publish.Start
             response = (
@@ -255,7 +286,9 @@ class RTMPServer:
             writer.write(response)
             await writer.drain()
 
-            logging.info(f"Stream {stream_key} started successfully.")
+            logging.info(
+                f"Stream {stream_key} started successfully under app {app_name}."
+            )
 
         except Exception as e:
             logging.error(f"Error handling publish request: {e}")
@@ -334,7 +367,7 @@ class RTMPServer:
 
     def decode_amf_object(self, payload, start_index):
         """
-        Decodes an AMF object safely.
+        Safely decodes an AMF object, handling edge cases properly.
         """
         amf_object = {}
         index = start_index
@@ -440,9 +473,10 @@ class RTMPServer:
         return amf_object, index
 
     async def handle_connect(self, transaction_id, command_object, writer):
-        """Responds to RTMP Connect requests."""
+        """
+        Responds to RTMP 'connect' requests with a proper NetConnection.Connect.Success response.
+        """
         try:
-            # Create the response body
             response_body = (
                 b"\x02"  # AMF0 String
                 + struct.pack(">H", len("_result"))
@@ -453,7 +487,7 @@ class RTMPServer:
                 + b"fms"
                 + b"\x02"
                 + struct.pack(">H", len("FMS/3,0,1,123"))
-                + b"FMS/3,0,1,123"  # 'fms' : 'FMS/3,0,1,123'
+                + b"FMS/3,0,1,123"
                 + b"\x00\x04"
                 + b"capabilities"
                 + b"\x00\x40\x00\x00\x00\x00\x00\x00\x00"  # 'capabilities' : 0.0 (double)
@@ -463,24 +497,23 @@ class RTMPServer:
                 + b"level"
                 + b"\x02"
                 + struct.pack(">H", len("status"))
-                + b"status"  # 'level' : 'status'
+                + b"status"
                 + b"\x00\x07"
                 + b"code"
                 + b"\x02"
                 + struct.pack(">H", len("NetConnection.Connect.Success"))
-                + b"NetConnection.Connect.Success"  # 'code' : 'NetConnection.Connect.Success'
+                + b"NetConnection.Connect.Success"
                 + b"\x00\x06"
                 + b"description"
                 + b"\x02"
                 + struct.pack(">H", len("Connection succeeded."))
-                + b"Connection succeeded."  # 'description' : 'Connection succeeded.'
+                + b"Connection succeeded."
                 + b"\x00\x04"
                 + b"objectEncoding"
-                + b"\x00\x40\x00\x00\x00\x00\x00\x00\x00"  # 'objectEncoding' : 0.0 (double)
+                + b"\x00\x40\x00\x00\x00\x00\x00\x00\x00"
                 + b"\x00\x00\x09"  # End of object
             )
 
-            # Create the response header
             response_header = (
                 b"\x02\x00\x00\x00\x00\x00\x00\x00\x00"  # Chunk Stream ID and Timestamp
                 + struct.pack(">I", len(response_body))  # Message Length
@@ -488,12 +521,12 @@ class RTMPServer:
                 + b"\x00\x00\x00\x00"  # Message Stream ID
             )
 
-            # Combine header and body
             response = response_header + response_body
-
             writer.write(response)
             await writer.drain()
+
             logging.info("Sent RTMP connect response.")
+
         except Exception as e:
             logging.error(f"Failed to handle connect: {e}")
 
