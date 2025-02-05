@@ -1,24 +1,40 @@
-# RTMP Webcam Streaming & Server
+# 📡 RTMP Webcam Streaming & Server
 
-This repository provides two functionalities, each handled by a separate script:
-1. **Main Streaming Script** (`main.py`) – Uses FFmpeg to stream a webcam feed with audio.
-2. **RTMP Server** (`RTMPServer.py`) – A minimal server that listens for incoming RTMP streams and handles the handshake process.
+This repository provides two functionalities within a single script:
 
-## 🚀 Main Streaming Script (`main.py`)
-This script launches a **webcam stream with audio** and provides configurable options for selecting video and audio devices.
+- **Webcam Streaming** – Uses FFmpeg to stream a webcam feed with audio.
+- **RTMP Server** – A minimal RTMP server that listens for incoming streams, performs the handshake, and optionally launches FFmpeg.
 
-### **Features**
+## 🚀 Features
+### ✅ Webcam Streaming
 - Lists available video and audio devices upon launch.
-- Highlights the configured devices in **yellow** if they match available system devices.
+- Highlights the configured devices in **yellow** if they match system devices.
 - Streams video via **FFmpeg**.
 - Responds to the `q` key to stop the stream.
 - Displays **metadata** with video and audio stream information.
 
-### **Usage**
-1. Modify the **configuration settings** at the top of `main.py` to select the correct **video** and **audio** devices.
+### ✅ RTMP Server
+- Listens for incoming RTMP streams on the configured **port**.
+- Performs the **RTMP handshake**.
+- Attempts to start the stream.
+- Can automatically launch FFmpeg upon receiving a connection.
+
+---
+
+## 🛠 Configuration
+Modify the **configuration settings** at the top of the script:
+- Select the correct **video** and **audio** devices.
+- Set the **RTMP URL** for streaming.
+- Choose whether to **automatically launch FFmpeg** when receiving a connection.
+
+---
+
+## ▶️ Usage
+1. Modify the configuration settings at the top of the 'main.py' script.
 2. Run the script:
    ```sh
    python main.py
+
 3. Modify the **configuration settings** at the top of `RTMPServer.py` to select the correct **video** and **audio** devices, and whether to launch FFMpeg automatically
 4.Run the script:
    ```sh
