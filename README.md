@@ -3,7 +3,7 @@
 This repository provides two functionalities within a single script:
 
 - **Webcam Streaming** – Uses FFmpeg to stream a webcam feed with audio.
-- **RTMP Server** – A minimal RTMP server that listens for incoming streams, performs the handshake, and optionally launches FFmpeg.
+- **RTMP Server** – A minimal RTMP server that listens for incoming streams, performs the handshake, and optionally launches FFmpeg to engage a stream with the server; if false, manually launch OBS Studio to launch a stream.
 
 ## 🚀 Features
 ### ✅ Webcam Streaming
