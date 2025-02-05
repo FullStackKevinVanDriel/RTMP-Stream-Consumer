@@ -1,6 +1,8 @@
 import asyncio
 import struct
 import logging
+import os
+import time
 
 logging.basicConfig(level=logging.DEBUG)
 
@@ -10,6 +12,7 @@ class RTMPServer:
         self.host = host
         self.port = port
         self.streams = {}
+        self.chunk_size = 128
 
     async def handle_client(self, reader, writer):
         logging.info("New client connected.")
@@ -17,11 +20,12 @@ class RTMPServer:
         # Step 1: Perform RTMP Handshake
         await self.rtmp_handshake(reader, writer)
 
-        # Step 2: Process RTMP messages
+        # Step 2: Process RTMP messages continuously
         while True:
             try:
                 # Read RTMP Chunk Basic Header (1 byte)
                 basic_header = await reader.read(1)
+                print("New data just came in")
                 if not basic_header:
                     logging.info("Client disconnected.")
                     break
@@ -46,6 +50,9 @@ class RTMPServer:
                 if chunk_format == 0:
                     # 11-byte header
                     message_header = await reader.read(11)
+                    if not message_header:
+                        logging.error("Message header not received.")
+                        break
                     timestamp = int.from_bytes(message_header[0:3], "big")
                     payload_size = int.from_bytes(message_header[3:6], "big")
                     msg_type = message_header[6:7]
@@ -53,6 +60,9 @@ class RTMPServer:
                 elif chunk_format == 1:
                     # 7-byte header
                     message_header = await reader.read(7)
+                    if not message_header:
+                        logging.error("Message header not received.")
+                        break
                     timestamp = int.from_bytes(message_header[0:3], "big")
                     payload_size = int.from_bytes(message_header[3:6], "big")
                     msg_type = message_header[6:7]
@@ -60,6 +70,9 @@ class RTMPServer:
                 elif chunk_format == 2:
                     # 3-byte header
                     message_header = await reader.read(3)
+                    if not message_header:
+                        logging.error("Message header not received.")
+                        break
                     timestamp = int.from_bytes(message_header[0:3], "big")
                     payload_size = None  # Payload size is not present in this format
                     msg_type = None  # Message type is not present in this format
@@ -77,10 +90,15 @@ class RTMPServer:
 
                 # Read Payload Data
                 if payload_size:
-                    payload = await reader.read(payload_size)
-                    if not payload:
-                        logging.warning("Payload missing.")
-                        break
+                    payload = b""
+                    while len(payload) < payload_size:
+                        chunk = await reader.read(
+                            min(self.chunk_size, payload_size - len(payload))
+                        )
+                        if not chunk:
+                            logging.warning("Payload missing.")
+                            break
+                        payload += chunk
 
                     logging.debug(f"Received payload: {payload.hex()}")
 
@@ -111,35 +129,38 @@ class RTMPServer:
                 break
 
     async def rtmp_handshake(self, reader, writer):
-        """Implements RTMP Handshake: C0, C1, C2 exchange."""
+        """Handles the RTMP handshake process correctly for OBS & FFmpeg."""
+        RTMP_HANDSHAKE_SIZE = 1536
         try:
-            c0_c1 = await reader.read(1537)  # C0 (1 byte) + C1 (1536 bytes)
-            if not c0_c1:
-                logging.error("Handshake failed: no data received.")
-                return
+            # Receive C0 + C1
+            c0_c1 = await reader.readexactly(1537)
+            logging.info("Received C0 + C1.")
 
-            logging.info("Received C0 + C1 handshake from client.")
-
-            # C0 should be 0x03 for RTMP version
-            if c0_c1[0] != 3:
-                logging.error("Invalid RTMP version.")
-                return
-
-            # Respond with S0 + S1 + S2
-            s0_s1_s2 = bytes([3]) + c0_c1[1:1537] + c0_c1[1:1537]  # Echo C1 as S2
-            writer.write(s0_s1_s2)
+            # Send S0 + S1
+            s1 = bytearray(1536)
+            s1[0:4] = struct.pack(">I", int(time.time()))
+            s1[4:8] = b"\x00\x00\x00\x00"
+            s1[8:] = os.urandom(1528)
+            writer.write(b"\x03" + s1)
             await writer.drain()
-            logging.info("Sent S0 + S1 + S2 handshake response.")
+            logging.info("Sent S0 + S1.")
 
-            # Receive C2 from client
-            c2 = await reader.read(1536)
-            if not c2:
-                logging.error("Failed to receive C2 from client.")
-                return
+            # Receive C2
+            c2 = await reader.readexactly(1536)
+            logging.info("Received C2.")
 
-            logging.info("Handshake completed.")
+            # Send S2
+            writer.write(s1)  # S2 is a copy of S1
+            await writer.drain()
+            logging.info("Sent S2.")
+
+            return True  # Handshake success
+
+        except asyncio.TimeoutError:
+            logging.error("Handshake error: Timeout while waiting for client response.")
         except Exception as e:
-            logging.error(f"Handshake error: {e}")
+            logging.error(f"Error during RTMP handshake: {e}")
+            writer.close()  # Close the connection after handshake error
 
     async def handle_video_packet(self, payload):
         """
@@ -208,11 +229,14 @@ class RTMPServer:
 
     def decode_amf_command(self, payload):
         """Decodes an AMF command payload."""
-        # Implement your AMF decoding logic here
-        # This is a placeholder implementation
-        command_name = "connect"
-        transaction_id = 1
-        command_object = {}
+        decoded_values = self.decode_amf_payload(payload)
+        if not decoded_values:
+            return None, None, None
+
+        command_name = decoded_values[0] if len(decoded_values) > 0 else None
+        transaction_id = decoded_values[1] if len(decoded_values) > 1 else None
+        command_object = decoded_values[2] if len(decoded_values) > 2 else {}
+
         return command_name, transaction_id, command_object
 
     async def handle_amf_command(self, payload, writer):
@@ -226,9 +250,7 @@ class RTMPServer:
             command_name, transaction_id, command_object = self.decode_amf_command(
                 payload
             )
-            decoded_values = self.decode_amf_payload(payload)
-            if decoded_values:
-                command_name = decoded_values[0]
+            if command_name:
                 logging.info(f"AMF Command Received: {command_name}")
 
                 if command_name == "connect":
@@ -236,9 +258,13 @@ class RTMPServer:
                 elif command_name == "createStream":
                     await self.handle_create_stream(writer)
                 elif command_name == "publish":
-                    await self.handle_publish(decoded_values, writer)
+                    await self.handle_publish(
+                        [command_name, transaction_id, command_object], writer
+                    )
                 elif command_name == "play":
-                    await self.handle_play(decoded_values, writer)
+                    await self.handle_play(
+                        [command_name, transaction_id, command_object], writer
+                    )
                 else:
                     logging.warning(f"Unknown AMF Command: {command_name}")
             else:
@@ -247,15 +273,16 @@ class RTMPServer:
         except Exception as e:
             logging.error(f"Error parsing AMF command: {e}")
 
-    async def handle_create_stream(self, writer):
+    async def handle_create_stream(self, transaction_id, writer):
         """
         Responds to RTMP createStream request properly.
         """
         stream_id = 1  # Default to stream ID 1
         self.streams[stream_id] = None
 
-        response = b"\x02\x00\x00\x00\x00\x00\x00\x00\x00\x05" + struct.pack(
-            ">I", stream_id
+        response = (
+            b"\x02\x00\x00\x00\x00\x00\x00\x00\x00\x05"  # RTMP Header
+            + struct.pack(">I", stream_id)  # Stream ID
         )
         writer.write(response)
         await writer.drain()
@@ -464,6 +491,7 @@ class RTMPServer:
                     break
 
                 amf_object[property_name] = property_value
+                print("amf_object", amf_object)
 
             except (struct.error, UnicodeDecodeError, IndexError) as e:
                 logging.error(f"Failed to decode AMF object at index {index}: {e}")
@@ -474,61 +502,103 @@ class RTMPServer:
 
     async def handle_connect(self, transaction_id, command_object, writer):
         """
-        Responds to RTMP 'connect' requests with a proper NetConnection.Connect.Success response.
+        Responds to RTMP 'connect' requests with the correct response format.
         """
         try:
+            # Define the expected stream key (hard-coded)
+            EXPECTED_STREAM_KEY = "test"  # Replace "test" with your desired key
+
+            # Extract the application (e.g., "live") and tcUrl (e.g., "rtmp://127.0.0.1:1935/live/test")
+            app_name = command_object.get("app", "default")
+            tc_url = command_object.get("tcUrl", "rtmp://127.0.0.1:1935/")
+
+            # Extract the stream key from the tcUrl (last part of the URL)
+            stream_key = tc_url.split("/")[-1]
+
+            logging.info(
+                f"Client connected to application: {app_name}, stream key: {stream_key}"
+            )
+
+            # Validate the stream key
+            if stream_key != EXPECTED_STREAM_KEY:
+                logging.error(
+                    f"Invalid stream key: {stream_key}. Expected: {EXPECTED_STREAM_KEY}"
+                )
+                writer.close()  # Close connection if the stream key is invalid
+                return
+
+            # Construct the response_body
             response_body = (
-                b"\x02"  # AMF0 String
+                b"\x02"
                 + struct.pack(">H", len("_result"))
-                + b"_result"  # '_result'
-                + b"\x00\x3f\xf0\x00\x00\x00\x00\x00\x00"  # Transaction ID 1 (double)
-                + b"\x03"  # AMF0 Object
-                + b"\x00\x03"
-                + b"fms"
+                + b"_result"
+                + b"\x00"
+                + struct.pack(">d", transaction_id)
+                + b"\x03"
+                + b"\x00\x06"
+                + b"fmsVer"
                 + b"\x02"
-                + struct.pack(">H", len("FMS/3,0,1,123"))
-                + b"FMS/3,0,1,123"
-                + b"\x00\x04"
+                + struct.pack(">H", len("FMS/3,5,3,888"))
+                + b"FMS/3,5,3,888"
+                + b"\x00\x0B"
                 + b"capabilities"
-                + b"\x00\x40\x00\x00\x00\x00\x00\x00\x00"  # 'capabilities' : 0.0 (double)
-                + b"\x00\x00\x09"  # End of object
-                + b"\x03"  # AMF0 Object
-                + b"\x00\x04"
+                + b"\x00"
+                + struct.pack(">d", 31.0)
+                + b"\x00\x05"
+                + b"tcUrl"
+                + b"\x02"
+                + struct.pack(">H", len(tc_url))
+                + tc_url.encode("utf-8")
+                + b"\x00\x00\x09"
+                + b"\x03"
+                + b"\x00\x05"
                 + b"level"
                 + b"\x02"
                 + struct.pack(">H", len("status"))
                 + b"status"
-                + b"\x00\x07"
+                + b"\x00\x04"
                 + b"code"
                 + b"\x02"
                 + struct.pack(">H", len("NetConnection.Connect.Success"))
                 + b"NetConnection.Connect.Success"
-                + b"\x00\x06"
+                + b"\x00\x0B"
                 + b"description"
                 + b"\x02"
                 + struct.pack(">H", len("Connection succeeded."))
                 + b"Connection succeeded."
-                + b"\x00\x04"
+                + b"\x00\x0E"
                 + b"objectEncoding"
-                + b"\x00\x40\x00\x00\x00\x00\x00\x00\x00"
-                + b"\x00\x00\x09"  # End of object
+                + b"\x00"
+                + struct.pack(">d", 3.0)
+                + b"\x00\x00\x09"
             )
 
+            # Construct the RTMP header
             response_header = (
-                b"\x02\x00\x00\x00\x00\x00\x00\x00\x00"  # Chunk Stream ID and Timestamp
-                + struct.pack(">I", len(response_body))  # Message Length
-                + b"\x14"  # Message Type ID (AMF Command)
-                + b"\x00\x00\x00\x00"  # Message Stream ID
+                b"\x02"
+                + b"\x00\x00\x00"
+                + struct.pack(">I", len(response_body))[1:4]
+                + b"\x14"
+                + b"\x00\x00\x00\x00"
             )
 
             response = response_header + response_body
+            logging.info(f"Sending RTMP response: {response.hex()}")
+
+            # Send the response
             writer.write(response)
             await writer.drain()
-
             logging.info("Sent RTMP connect response.")
 
+            # Send the createStream response
+            await self.handle_create_stream(transaction_id, writer)
+
+            # Keep connection open for OBS to process
+            await asyncio.sleep(2)
+
         except Exception as e:
-            logging.error(f"Failed to handle connect: {e}")
+            logging.error(f"Error handling RTMP connect: {e}")
+            writer.close()
 
     async def start(self):
         """Starts the RTMP server."""

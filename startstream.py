@@ -9,7 +9,7 @@ parser = argparse.ArgumentParser(
 parser.add_argument(
     "--rtmp_url",
     type=str,
-    default="rtmp://127.0.0.1:1935/live/webcam",
+    default="rtmp://127.0.0.1:1935/test/test",
     help="RTMP URL to stream to",
 )
 args = parser.parse_args()
