@@ -37,6 +37,6 @@ Modify the **configuration settings** at the top of the script:
    python main.py
 
 3. Modify the **configuration settings** at the top of `RTMPServer.py` to select the correct **video** and **audio** devices, and whether to launch FFMpeg automatically
-4.Run the script:
+4. Run the script:
    ```sh
    python RTMPServer.py
