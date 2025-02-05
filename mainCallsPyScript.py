@@ -24,6 +24,7 @@ output_file = "C:/Users/kevin/OneDrive/Documents/CASTUS/output_video.mkv"
 
 # Store metadata globally
 metadata = {}
+metadata2 = {}
 
 
 # Function to read metadata from FFmpeg's stderr without interfering with video.
@@ -36,8 +37,12 @@ def read_metadata(process):
             break
 
         # Look for metadata-related lines in stderr
-        if output and not "configuration: --" in output:
-            print("Metadata:", output)  # Print metadata updates
+        if output and "configuration: --enable-gpl --ena" not in output:
+            # print("Metadata:", output)  # Print metadata updates
+            if "Video:" in output:
+                print("Video:", output)  # Print video stream info
+            if "Audio:" in output:
+                print("Audio:", output)  # Print audio stream info
             metadata["latest"] = output  # Store latest metadata info
 
 
@@ -82,7 +87,7 @@ while True:
     try:
         # Start FFmpeg process with logging
         process = (
-            ffmpeg.input(rtmp_url, f="flv", timeout=100, rtbufsize="2024M")
+            ffmpeg.input(rtmp_url, f="flv", timeout=100, rtbufsize="1024M")
             .output(
                 output_file,
                 format="matroska",
@@ -95,7 +100,6 @@ while True:
         )
 
         if is_rtmp_ready() and not startstream_executed:
-            # subprocess.Popen(["python", "startstream.py", "--rtmp_url", rtmp_url])
             startstream_executed = True
 
         # Start metadata reader in a separate thread
@@ -109,7 +113,7 @@ while True:
             raw_frame = process.stdout.read(frame_size)  # Read one frame
 
             if len(raw_frame) != frame_size:
-                print("Stream attempted but no frame detected. Retrying in 1 second...")
+                print("Waiting for audio/video stream...")
                 process.terminate()
                 time.sleep(1)
                 break

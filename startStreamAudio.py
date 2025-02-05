@@ -23,37 +23,9 @@ ffmpeg_command = [
     # "-loglevel",
     # "debug",  # Enable detailed logging
     "-f",
-    "dshow",  # Use DirectShow for webcam input
-    "-rtbufsize",
-    "100M",  # Buffer size to prevent frame drops
-    "-framerate",
-    "30",  # Set framerate
-    "-video_size",
-    "1280x720",  # Set resolution
-    "-i",
-    "video=1080P Pro Stream",  # Set webcam device name (adjust if needed)
-    "-f",
     "dshow",  # Use DirectShow for audio input
     "-i",
     "audio=Microphone (1080P Pro Stream)",  # Set audio device name (adjust if needed)
-    "-c:v",
-    "libx264",  # Use H.264 encoding for video
-    "-preset",
-    "veryfast",  # Optimize encoding speed
-    "-b:v",
-    "2000k",  # Set video bitrate
-    "-maxrate",
-    "2000k",
-    "-bufsize",
-    "4000k",
-    "-pix_fmt",
-    "yuv420p",
-    "-g",
-    "60",  # GOP size (Keyframe interval)
-    "-keyint_min",
-    "30",
-    "-sc_threshold",
-    "0",
     "-c:a",
     "aac",  # Use AAC encoding for audio
     "-b:a",
@@ -66,7 +38,6 @@ ffmpeg_command = [
     "flv",  # Output format for RTMP streaming
     rtmp_url,
 ]
-
 
 print(f"Starting webcam stream to {rtmp_url}...")
 

@@ -6,155 +6,124 @@ import threading
 import time
 import json
 import socket
-import signal
 import sys
+
+# Define Video/Audio Sources
+video_device = "1080P Pro Stream"
+audio_device = "Microphone (1080P Pro Stream)"
 
 # Define RTMP Source
 connection_address = "127.0.0.1"
 connection_port = 1935
-connection_keys = "live/webcam"
+connection_keys = "live/live"
 rtmp_url = f"rtmp://{connection_address}:{connection_port}/{connection_keys}"
 
 # Define Frame Size
 width, height = 1280, 720
 frame_size = width * height * 3  # Size of a single frame in bytes
 
-# Define Output File
-output_file = "C:/Users/kevin/OneDrive/Documents/CASTUS/output_video.mkv"
-
-# Store metadata globally
-metadata = {}
-metadata2 = {}
+# Global variables
+process = None
+socket_server = None
+running = True
 
 
-# Function to read metadata from FFmpeg's stderr without interfering with video.
+def setup_socket():
+    global socket_server
+    socket_server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    socket_server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    socket_server.bind((connection_address, connection_port))
+    socket_server.listen(1)
+    print(f"RTMP Server listening on port {connection_port}")
+
+
 def read_metadata(process):
-    global metadata
-
     while True:
         output = process.stderr.readline().decode().strip()
         if not output:
             break
-
-        # Look for metadata-related lines in stderr
-        if output and "configuration: --enable-gpl --ena" not in output:
-            # print("Metadata:", output)  # Print metadata updates
-            if "Video:" in output:
-                print("Video:", output)  # Print video stream info
-            if "Audio:" in output:
-                print("Audio:", output)  # Print audio stream info
-            metadata["latest"] = output  # Store latest metadata info
+        if "Video:" in output or "Audio:" in output:
+            print(output)
 
 
-# Function to check if RTMP server is listening on port 1935 and ready to accept connections.
-def is_rtmp_ready(host=connection_address, port=connection_port, timeout=1):
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.settimeout(timeout)
-        try:
-            sock.connect((host, port))
-            return True
-        except (socket.timeout, ConnectionRefusedError):
-            return False
-
-
-# Function to handle cleanup on exit
 def cleanup():
+    global process, socket_server, running
+    running = False
     if process:
         process.terminate()
-    cv2.destroyAllWindows()
+        process.wait()
+    if socket_server:
+        socket_server.close()
     print("RTMP stream closed.")
-
-
-# Register cleanup function to be called on exit
-def signal_handler(sig, frame):
-    cleanup()
     sys.exit(0)
 
 
-signal.signal(signal.SIGINT, signal_handler)
-signal.signal(signal.SIGTERM, signal_handler)
+def display_window():
+    img = np.zeros((200, 400, 3), np.uint8)
+    cv2.putText(
+        img,
+        "Press 'q' to stop",
+        (50, 100),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        1,
+        (255, 255, 255),
+        2,
+    )
+    cv2.imshow("Control Window", img)
+    while running:
+        if cv2.waitKey(1) & 0xFF == ord("q"):
+            cleanup()
+        time.sleep(0.1)
 
-# Open RTMP stream using FFmpeg
-start_time = time.time()
-startstream_executed = False
-startstream_process = None
 
-# Define VideoWriter object
-fourcc = cv2.VideoWriter_fourcc(*"XVID")
-out = cv2.VideoWriter(output_file, fourcc, 20.0, (width, height))
-
-while True:
+def run_stream():
+    global process
     try:
-        # Start FFmpeg process with logging
-        process = (
-            ffmpeg.input(rtmp_url, f="flv", timeout=100, rtbufsize="1024M")
-            .output(
-                output_file,
-                format="matroska",
-                vcodec="copy",
-                acodec="copy",
-                y=None,  # Add the -y flag to overwrite the output file
-            )
-            .global_args("-loglevel", "verbose")
-            .run_async(pipe_stdout=subprocess.PIPE, pipe_stderr=subprocess.PIPE)
-        )
-
-        if is_rtmp_ready() and not startstream_executed:
-            startstream_executed = True
-
-        # Start metadata reader in a separate thread
-        metadata_thread = threading.Thread(
-            target=read_metadata, args=(process,), daemon=True
-        )
-        metadata_thread.start()
-
-        # Read and process frames
-        while True:
-            raw_frame = process.stdout.read(frame_size)  # Read one frame
-
-            if len(raw_frame) != frame_size:
-                print("Waiting for audio/video stream...")
-                process.terminate()
-                time.sleep(1)
-                break
-
-            print("Stream detected! Attempting playback...")
-
-            # Convert raw frame to NumPy array
+        while running:
             try:
-                frame = np.frombuffer(raw_frame, np.uint8).reshape([height, width, 3])
+                process.stdout.read(frame_size)
             except ValueError as e:
-                print(f"Error: {e}")
-                break
-
-            # Write the frame to the output file
-            out.write(frame)
-
-            print("Playback started!")
-            # Main loop to keep playing frames
-            while True:
-                raw_frame = process.stdout.read(frame_size)
-                if len(raw_frame) != frame_size:
-                    print("Stream lost. Exiting...")
-                    break
-
-                frame = np.frombuffer(raw_frame, np.uint8).reshape([height, width, 3])
-                out.write(frame)
-
-                if cv2.waitKey(1) & 0xFF == ord("q"):  # Quit if 'q' is pressed
-                    print("Stream manually stopped.")
-                    break
-
-            process.terminate()
-            break  # Exit the main loop when streaming stops
-
+                print(f"Frame error: {e}")
+                continue
     except Exception as e:
-        print(f"Error: {e}")
-        if process:
-            stderr_output = process.stderr.read().decode("utf-8")
-            print(f"FFmpeg stderr: {stderr_output}")
-            process.terminate()
-        break  # Exit the script on failure
+        print(f"Stream error: {e}")
 
-# Cleanup
-cleanup()
+
+try:
+    # Initialize socket server
+    setup_socket()
+
+    print(f"Starting webcam stream to {rtmp_url}...")
+    ffmpeg_command = f'ffmpeg -f dshow -rtbufsize 100M -framerate 30 -video_size {width}x{height} -i video="{video_device}" -f dshow -i audio="{audio_device}" -c:v libx264 -preset veryfast -b:v 2000k -maxrate 2000k -bufsize 4000k -pix_fmt yuv420p -g 60 -keyint_min 30 -sc_threshold 0 -c:a aac -b:a 128k -ar 44100 -ac 2 -f flv {rtmp_url}'
+
+    process = subprocess.Popen(
+        ffmpeg_command,
+        shell=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        bufsize=10**8,
+    )
+
+    # Create and start all threads
+    metadata_thread = threading.Thread(
+        target=read_metadata, args=(process,), daemon=True
+    )
+    stream_thread = threading.Thread(target=run_stream, daemon=True)
+    window_thread = threading.Thread(target=display_window, daemon=True)
+
+    metadata_thread.start()
+    stream_thread.start()
+    window_thread.start()
+
+    # Wait for threads
+    metadata_thread.join()
+    stream_thread.join()
+    window_thread.join()
+
+except Exception as e:
+    print(f"Error: {e}")
+    if process:
+        stderr_output = process.stderr.read().decode("utf-8")
+        print(f"FFmpeg stderr: {stderr_output}")
+finally:
+    cv2.destroyAllWindows()

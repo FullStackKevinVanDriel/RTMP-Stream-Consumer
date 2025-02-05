@@ -591,10 +591,10 @@ class RTMPServer:
             logging.info("Sent RTMP connect response.")
 
             # Send the createStream response
-            await self.handle_create_stream(transaction_id, writer)
+            # await self.handle_create_stream(transaction_id, writer)
 
             # Keep connection open for OBS to process
-            await asyncio.sleep(2)
+            # await asyncio.sleep(2)
 
         except Exception as e:
             logging.error(f"Error handling RTMP connect: {e}")
