@@ -12,6 +12,7 @@ This repository provides two functionalities within a single script:
 - Streams video via **FFmpeg**.
 - Responds to the `q` key to stop the stream.
 - Displays **metadata** with video and audio stream information.
+- ![alt text](main_audiovideo.png)
 
 ### ✅ RTMP Server
 - Listens for incoming RTMP streams on the configured **port**.
