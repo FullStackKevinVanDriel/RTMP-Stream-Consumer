@@ -27,6 +27,7 @@ process = None
 socket_server = None
 running = True
 metadata_text = ""
+available_devices = {"video": [], "audio": []}
 
 
 def setup_socket():
@@ -36,6 +37,26 @@ def setup_socket():
     socket_server.bind((connection_address, connection_port))
     socket_server.listen(1)
     print(f"RTMP Server listening on port {connection_port}")
+
+
+def list_dshow_devices():
+    """List all DirectShow video and audio devices"""
+    devices = {"video": [], "audio": []}
+
+    cmd = "ffmpeg -list_devices true -f dshow -i dummy"
+    process = subprocess.Popen(cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
+
+    lines = process.stderr.read().decode("utf-8").split("\n")
+    current_type = None
+
+    for line in lines:
+        if "(video)" in line or "(audio)" in line:
+            # Extract device name between quotes and type
+            device_name = line.split('"')[1]
+            device_type = "video" if "(video)" in line else "audio"
+            devices[device_type].append(device_name)
+
+    return devices
 
 
 def parse_stream_info(line):
@@ -97,70 +118,155 @@ def read_metadata(process):
                         metadata_text += f"Channels: {a.get('channels', 'N/A')}\n"
                         metadata_text += f"Bitrate: {a.get('bitrate', 'N/A')}\n"
 
-                print(metadata_text)
-
 
 def display_window():
-    global metadata_text
+    global metadata_text, available_devices
+    # List all DirectShow devices
+
     while running:
-        # Larger window for more content
         img = np.zeros((700, 1000, 3), np.uint8)
 
-        # Display configuration info
-        config_text = [
-            f"Video Input: {video_device}",
-            f"Audio Input: {audio_device}",
-            f"RTMP URL: {rtmp_url}",
-            "----------------------------------------",  # Separator
-        ]
-
-        # Draw config info at top
+        # Top section - Configuration
         y = 50
+        config_text = [
+            f"RTMP URL: {rtmp_url}",
+            f"Selected Video: {video_device}",
+            f"Selected Audio: {audio_device}",
+            "----------------------------------------",
+        ]
         for line in config_text:
             cv2.putText(
+                img, line, (50, y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2
+            )
+            y += 30
+
+        # Middle section - Device Lists (two columns)
+        y = 180
+        # Video devices (left column)
+        cv2.putText(
+            img,
+            "Available Video Devices:",
+            (50, y),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (255, 255, 255),
+            2,
+        )
+        y += 30
+        for device in available_devices["video"]:
+            # Use yellow color if device matches selected
+            color = (0, 255, 255) if device == video_device else (255, 255, 255)
+            cv2.putText(
                 img,
-                line,
-                (50, y),
+                f"- {device}",
+                (70, y),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.7,
-                (255, 255, 255),
+                color,
                 2,
             )
             y += 30
 
-        # Draw stream metadata below config
-        y += 20  # Add space after separator
-        if metadata_text:
-            for line in metadata_text.split("\n"):
-                cv2.putText(
-                    img,
-                    line,
-                    (50, y),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.7,
-                    (255, 255, 255),
-                    2,
-                )
-                y += 30
-        else:
+        # Audio devices (right column)
+        y = 180
+        cv2.putText(
+            img,
+            "Available Audio Devices:",
+            (500, y),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (255, 255, 255),
+            2,
+        )
+        y += 30
+        for device in available_devices["audio"]:
+            # Use yellow color if device matches selected
+            color = (0, 255, 255) if device == audio_device else (255, 255, 255)
             cv2.putText(
                 img,
-                "Waiting for stream metadata...",
-                (50, y),
+                f"- {device}",
+                (520, y),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.7,
-                (255, 255, 255),
+                color,
                 2,
             )
+            y += 30
 
-        # Keep quit message at bottom
+        # Vertical separator
+        cv2.line(img, (475, 160), (475, 400), (255, 255, 255), 2)
+
+        # Bottom section - Stream Metadata (two columns)
+        # Headers at same y-position
+        y = 420
+
+        # Left column - Video header
+        cv2.putText(
+            img,
+            "Video Stream Metadata:",
+            (50, y),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (255, 255, 255),
+            2,
+        )
+
+        # Right column - Audio header
+        cv2.putText(
+            img,
+            "Audio Stream Metadata:",
+            (500, y),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (255, 255, 255),
+            2,
+        )
+
+        if metadata_text:
+            sections = metadata_text.split("\n\n")
+            y = 450  # Start both columns at same y
+
+            # Video metadata (left column)
+            if "Video Stream:" in metadata_text:
+                for line in sections[1].split("\n")[1:]:
+                    cv2.putText(
+                        img,
+                        line,
+                        (70, y),  # Fixed left x-coordinate
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.7,
+                        (255, 255, 255),
+                        2,
+                    )
+                    y += 30
+
+            # Reset y for audio column
+            y = 450
+            # Audio metadata (right column)
+            if "Audio Stream:" in metadata_text:
+                for line in sections[2].split("\n")[1:]:
+                    cv2.putText(
+                        img,
+                        line,
+                        (520, y),  # Fixed right x-coordinate
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.7,
+                        (255, 255, 255),
+                        2,
+                    )
+                    y += 30
+
+        # Vertical separator for metadata section
+        cv2.line(img, (475, 420), (475, 600), (255, 255, 255), 2)
+
+        # Bottom - Quit message (moved up & changed to green)
         cv2.putText(
             img,
             "Press 'q' to stop",
-            (50, 650),
+            (50, 680),  # Moved up inside the window (previously 750)
             cv2.FONT_HERSHEY_SIMPLEX,
             1,
-            (255, 255, 255),
+            (0, 255, 0),  # Green color
             2,
         )
 
@@ -196,6 +302,9 @@ def run_stream():
 
 
 try:
+    # Store devices first
+    available_devices = list_dshow_devices()
+
     # Initialize socket server
     setup_socket()
 

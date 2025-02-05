@@ -3,16 +3,87 @@ import struct
 import logging
 import os
 import time
+import subprocess
 
 logging.basicConfig(level=logging.DEBUG)
 
+localhost = "127.0.0.1"
+localport = 1935
+video_device = "1080P Pro Stream"
+audio_device = "Microphone (1080P Pro Stream)"
+launchStreamWithFFMPEG = True
+
 
 class RTMPServer:
-    def __init__(self, host="127.0.0.1", port=1935):
+
+    def __init__(self, host=localhost, port=localport):
         self.host = host
         self.port = port
         self.streams = {}
         self.chunk_size = 128
+
+    def launch_audiovideostream(self):
+        # Define RTMP URL and device settings
+        rtmp_url = f"rtmp://{localhost}:{localport}/live"
+        width, height = 1280, 720
+
+        # Construct the FFmpeg command
+        ffmpeg_command = [
+            "ffmpeg",
+            "-f",
+            "dshow",
+            "-rtbufsize",
+            "100M",
+            "-framerate",
+            "30",
+            "-video_size",
+            f"{width}x{height}",
+            "-i",
+            f"video={video_device}",
+            "-f",
+            "dshow",
+            "-i",
+            f"audio={audio_device}",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-b:v",
+            "2000k",
+            "-maxrate",
+            "2000k",
+            "-bufsize",
+            "4000k",
+            "-pix_fmt",
+            "yuv420p",
+            "-g",
+            "60",
+            "-keyint_min",
+            "30",
+            "-sc_threshold",
+            "0",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "128k",
+            "-ar",
+            "44100",
+            "-ac",
+            "2",
+            "-f",
+            "flv",
+            rtmp_url,
+        ]
+
+        # Print and launch the FFmpeg process
+        print(f"Starting webcam stream to {rtmp_url}...")
+
+        process = subprocess.Popen(
+            ffmpeg_command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            bufsize=10**8,
+        )
 
     async def handle_client(self, reader, writer):
         logging.info("New client connected.")
@@ -604,6 +675,10 @@ class RTMPServer:
         """Starts the RTMP server."""
         server = await asyncio.start_server(self.handle_client, self.host, self.port)
         logging.info(f"RTMP Server listening on {self.host}:{self.port}")
+
+        # Launch the audio/video stream
+        if launchStreamWithFFMPEG == True:
+            self.launch_audiovideostream()
 
         async with server:
             await server.serve_forever()
