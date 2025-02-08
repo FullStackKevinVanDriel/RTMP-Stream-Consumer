@@ -10,11 +10,12 @@ logging.basicConfig(level=logging.DEBUG)
 # Configure Video/Audio Sources; let FFMpeg automatically launch stream or use OBS Studio seperately
 video_device = "1080P Pro Stream"
 audio_device = "Microphone (1080P Pro Stream)"
-launchStreamWithFFMPEG = True
+launchStreamWithFFMPEG = False
 
 # RTMP Server Settings
 localhost = "127.0.0.1"
 localport = 1935
+EXPECTED_STREAM_KEY = "liv"  # Replace "test" with your desired key
 
 
 class RTMPServer:
@@ -202,22 +203,39 @@ class RTMPServer:
                 logging.error(f"Error handling client: {e}")
                 break
 
+    def generate_s1(self):
+        """Generates a valid S1 packet with a random payload"""
+        time = struct.pack(">I", 0)  # Zero timestamp
+        zero = struct.pack(">I", 0)  # Zero
+        payload = os.urandom(1528)  # Random payload
+        return time + zero + payload
+
     async def rtmp_handshake(self, reader, writer):
         """Handles the RTMP handshake process correctly for OBS & FFmpeg."""
         RTMP_HANDSHAKE_SIZE = 1536
         try:
-            # Receive C0 + C1
-            c0_c1 = await reader.readexactly(1537)
-            logging.info("Received C0 + C1.")
+            logging.info("Waiting for C0...")
+
+            # Step 1: Read C0 (1 byte)
+            c0 = await reader.readexactly(1)
+            if c0 != b"\x03":  # RTMP version 3 expected
+                logging.error("Invalid RTMP version: %s", c0)
+                return
+
+            logging.info("Received C0 (RTMP version: %s)", c0.hex())
+
+            # Step 2: Read C1 (1536 bytes)
+            c1 = await reader.readexactly(1536)
+            logging.info("Received C1 (1536 bytes)")
 
             # Send S0 + S1
-            s1 = bytearray(1536)
-            s1[0:4] = struct.pack(">I", int(time.time()))
-            s1[4:8] = b"\x00\x00\x00\x00"
-            s1[8:] = os.urandom(1528)
-            writer.write(b"\x03" + s1)
+            # Step 2: Send S0+S1+S2
+            s0 = b"\x03"  # RTMP version 3
+            s1 = self.generate_s1()
+            s2 = c1  # S2 is just echoing back C1
+            writer.write(s0 + s1 + s2)
             await writer.drain()
-            logging.info("Sent S0 + S1.")
+            logging.info("Sent S0+S1+S2")
 
             # Receive C2
             c2 = await reader.readexactly(1536)
@@ -227,6 +245,8 @@ class RTMPServer:
             writer.write(s1)  # S2 is a copy of S1
             await writer.drain()
             logging.info("Sent S2.")
+
+            logging.info("RTMP Handshake complete -- SUCCESS.")
 
             return True  # Handshake success
 
@@ -579,9 +599,6 @@ class RTMPServer:
         Responds to RTMP 'connect' requests with the correct response format.
         """
         try:
-            # Define the expected stream key (hard-coded)
-            EXPECTED_STREAM_KEY = "test"  # Replace "test" with your desired key
-
             # Extract the application (e.g., "live") and tcUrl (e.g., "rtmp://127.0.0.1:1935/live/test")
             app_name = command_object.get("app", "default")
             tc_url = command_object.get("tcUrl", "rtmp://127.0.0.1:1935/")
