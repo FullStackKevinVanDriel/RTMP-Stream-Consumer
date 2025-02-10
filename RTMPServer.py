@@ -779,21 +779,35 @@ class RTMPServer:
             )
         )
 
-
-
     def encode_amf0_onstatus(self):
         """Encodes the RTMP `onStatus` event using AMF0 format."""
 
         return (
-            b'\x02' + struct.pack(">H", len("onStatus")) + b"onStatus"  # AMF0 String: `onStatus`
-            + b'\x00\x00\x00\x00'  # AMF0 Number: Transaction ID = 0.0
-            + b'\x03'  # AMF0 Object (Start)
-            + b'\x02' + struct.pack(">H", len("level")) + b"level" + b'\x02' + struct.pack(">H", len("status")) + b"status"
-            + b'\x02' + struct.pack(">H", len("code")) + b"code" + b'\x02' + struct.pack(">H", len("NetConnection.Connect.Success")) + b"NetConnection.Connect.Success"
-            + b'\x02' + struct.pack(">H", len("description")) + b"description" + b'\x02' + struct.pack(">H", len("Connection established successfully.")) + b"Connection established successfully."
-            + b'\x00\x00\x09'  # AMF0 Object End
+            b"\x02"
+            + struct.pack(">H", len("onStatus"))
+            + b"onStatus"  # AMF0 String: `onStatus`
+            + b"\x00\x00\x00\x00"  # AMF0 Number: Transaction ID = 0.0
+            + b"\x03"  # AMF0 Object (Start)
+            + b"\x02"
+            + struct.pack(">H", len("level"))
+            + b"level"
+            + b"\x02"
+            + struct.pack(">H", len("status"))
+            + b"status"
+            + b"\x02"
+            + struct.pack(">H", len("code"))
+            + b"code"
+            + b"\x02"
+            + struct.pack(">H", len("NetConnection.Connect.Success"))
+            + b"NetConnection.Connect.Success"
+            + b"\x02"
+            + struct.pack(">H", len("description"))
+            + b"description"
+            + b"\x02"
+            + struct.pack(">H", len("Connection established successfully."))
+            + b"Connection established successfully."
+            + b"\x00\x00\x09"  # AMF0 Object End
         )
-
 
     def set_chunk_size(self, size):
         """Encodes and returns an RTMP Set Chunk Size message in the correct format for FFmpeg."""
@@ -1081,19 +1095,30 @@ class RTMPServer:
         status_payload = self.encode_amf0_onstatus()
 
         # 1️⃣ RTMP Chunk Basic Header (1 byte)
-        basic_header = b'\x02'  # Format 0, Chunk Stream ID 2 (CSID = 2)
+        basic_header = b"\x02"  # Format 0, Chunk Stream ID 2 (CSID = 2)
 
         # 2️⃣ RTMP Message Header (7 bytes)
-        timestamp = b'\x00\x00\x00'  # Always 0 for control messages
-        message_length = struct.pack(">I", len(status_payload))[1:4]  # Payload size (3 bytes)
-        message_type = b'\x14'  # RTMP Message Type ID for Invoke (`onStatus`)
-        message_stream_id = b'\x00\x00\x00\x00'  # Always 0 for control messages
+        timestamp = b"\x00\x00\x00"  # Always 0 for control messages
+        message_length = struct.pack(">I", len(status_payload))[
+            1:4
+        ]  # Payload size (3 bytes)
+        message_type = b"\x14"  # RTMP Message Type ID for Invoke (`onStatus`)
+        message_stream_id = b"\x00\x00\x00\x00"  # Always 0 for control messages
 
         # Combine all parts into a single RTMP packet
-        onstatus_packet = basic_header + timestamp + message_length + message_type + message_stream_id + status_payload
+        onstatus_packet = (
+            basic_header
+            + timestamp
+            + message_length
+            + message_type
+            + message_stream_id
+            + status_payload
+        )
 
         # Debugging: Print the hex dump to verify structure before sending
-        print(f"🔍 Debug `onStatus`: {onstatus_packet.hex()} (Length: {len(onstatus_packet)})")
+        print(
+            f"🔍 Debug `onStatus`: {onstatus_packet.hex()} (Length: {len(onstatus_packet)})"
+        )
 
         return onstatus_packet
 
