@@ -747,37 +747,34 @@ class RTMPServer:
         return b"\x02" + struct.pack(">H", len(encoded)) + encoded
 
     def encode_amf0_number(self, value: float) -> bytes:
-        """Encodes an AMF0 number (Double precision float)."""
-        return b"\x00" + struct.pack(">d", float(value))
+        """Encodes an AMF0 number (double precision float)."""
+        return b"\x00" + struct.pack(">d", float(value))  # 8-byte IEEE 754 double
 
     def encode_amf0_null(self) -> bytes:
         """Encodes an AMF0 null value."""
         return b"\x05"
 
     def encode_amf0_object(self, properties: dict) -> bytes:
-        """Encodes an AMF0 object correctly."""
-        encoded = b"\x03"  # AMF0 Object marker (start)
+        """Encodes an AMF0 object properly."""
+        obj = b"\x03"  # AMF0 Object marker
         for key, value in properties.items():
-            encoded += self.encode_amf0_string(key)  # Encode property name
+            obj += struct.pack(">H", len(key)) + key.encode("utf-8")
             if isinstance(value, str):
-                encoded += self.encode_amf0_string(value)  # Encode string value
+                obj += self.encode_amf0_string(value)[1:]  # Skip type byte
             elif isinstance(value, (int, float)):
-                encoded += self.encode_amf0_number(value)  # Encode number value
-            else:
-                raise ValueError(f"Unsupported AMF type: {type(value)} for key: {key}")
+                obj += self.encode_amf0_number(value)
+        obj += b"\x00\x00\x09"  # AMF0 Object End Marker
+        return obj
 
-        encoded += b"\x00\x00\x09"  # Object end marker
-        return encoded
-
-    def encode_amf0_result(self, transaction_id: float, tc_url: str) -> bytes:
+    def encode_amf0_result(self, transaction_id, tc_url):
         """
         Constructs an AMF0 `_result` response for RTMP 'connect' with correct structure.
         """
         return (
-            self.encode_amf0_string("_result")  # `_result` command
+            self.encode_amf0_string("_result")  # Command Name
             + self.encode_amf0_number(transaction_id)  # Transaction ID
-            + self.encode_amf0_null()  # AMF NULL (Placeholder for optional args)
-            + self.encode_amf0_object(  # Connection Success Object
+            + b"\x05"  # AMF0 NULL (Correct placement)
+            + self.encode_amf0_object(
                 {
                     "fmsVer": "FMS/3,5,3,888",
                     "capabilities": 31.0,
@@ -785,9 +782,26 @@ class RTMPServer:
                     "code": "NetConnection.Connect.Success",
                     "description": "Connection succeeded.",
                     "tcUrl": tc_url,
+                    "objectEncoding": 0.0,  # **NEW FIELD (Prevents FFmpeg Malformed Error)**
                 }
             )
         )
+
+    def build_result_packet(self, transaction_id, tc_url):
+        """
+        Constructs the full RTMP `_result` response packet.
+        """
+        amf_payload = self.encode_amf0_result(transaction_id, tc_url)
+
+        connect_header = (
+            b"\x02"  # Chunk Basic Header (Format 0, CSID 2)
+            + b"\x00\x00\x00"
+            + struct.pack(">I", len(amf_payload))[1:4]  # Correct payload length
+            + b"\x14"  # Message Type ID (0x14 = Command Message)
+            + b"\x00\x00\x00\x00"  # Stream ID (Always 0 for Connect)
+        )
+
+        return connect_header + amf_payload
 
     def set_chunk_size(self, size):
         """Encodes and returns an RTMP Set Chunk Size message in the correct format for FFmpeg."""
@@ -889,17 +903,19 @@ class RTMPServer:
         """Encodes an AMF0 boolean."""
         return b"\x01" + struct.pack(">B", 1 if value else 0)
 
-    def encode_amf0_object(self, properties):
-        """Encodes an AMF0 object."""
-        encoded = b"\x03"  # AMF0 Object marker
+    def encode_amf0_object(self, properties: dict) -> bytes:
+        """
+        Encodes an AMF0 object with correct key-value pairs.
+        """
+        obj = b"\x03"  # AMF0 Object Start
         for key, value in properties.items():
-            encoded += self.encode_amf0_string(key)
+            obj += struct.pack(">H", len(key)) + key.encode("utf-8")  # Key name
             if isinstance(value, str):
-                encoded += self.encode_amf0_string(value)
+                obj += self.encode_amf0_string(value)  # Use correct string encoding
             elif isinstance(value, (int, float)):
-                encoded += self.encode_amf0_number(value)
-        encoded += b"\x00\x00\x09"  # Object End Marker
-        return encoded
+                obj += self.encode_amf0_number(value)
+        obj += b"\x00\x00\x09"  # **Proper Object End Marker**
+        return obj
 
     import struct
 
@@ -1342,21 +1358,13 @@ class RTMPServer:
             logging.info("✅ Sent Set Peer Bandwidth.")
 
             # ✅ Step 4: Send `_result` (NetConnection.Connect.Success) with CORRECT format
-            amf_payload = self.encode_amf0_result(transaction_id, tc_url)
+            full_result = self.build_result_packet(transaction_id, tc_url)
 
-            connect_header = (
-                b"\x02"  # Chunk Basic Header (Format 0, CSID 2)
-                + b"\x00\x00\x00"
-                + struct.pack(">I", len(amf_payload))[1:4]
-                + b"\x14"  # Message Type ID (0x14 = Command Message)
-                + b"\x00\x00\x00\x00"
-            )
-
-            full_result = connect_header + amf_payload
-            # full_result = self.result_for_connect()
             logging.debug(f"RTMP _result Response Hex: {full_result.hex()}")
             writer.write(full_result)
-            await self.drain_and_sleep(writer)
+            await self.drain_and_sleep(
+                writer
+            )  # Ensure the data is sent before continuing
             logging.info("✅ Sent NetConnection.Connect.Success.")
 
             # ✅ Step 5: Send `onStatus` event to confirm successful connection
