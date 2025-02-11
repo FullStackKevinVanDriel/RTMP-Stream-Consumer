@@ -1,12 +1,8 @@
 import asyncio
-from io import BytesIO
-import socket
 import struct
 import logging
 import os
-import time
 import subprocess
-
 
 logging.basicConfig(level=logging.DEBUG)
 
@@ -18,7 +14,6 @@ launchStreamWithFFMPEG = False
 # RTMP Server Settings
 localhost = "127.0.0.1"
 localport = 1935
-EXPECTED_STREAM_KEY = "test"  # Replace "test" with your desired key
 APPLICATION = "live"
 SERVERLINKANDPORT = f"rtmp://{localhost}:{localport}"
 SERVERLINKANDPORTANDAPP = f"rtmp://{localhost}:{localport}/{APPLICATION}"
@@ -45,14 +40,6 @@ RTMP_MSG_TYPE_SET_CHUNK_SIZE = 0x01  # Set chunk size
 # Default RTMP Chunk Size (modifiable by client)
 DEFAULT_CHUNK_SIZE = 128
 
-# AMF Data Type Constants
-AMF_NUMBER = 0x00
-AMF_BOOLEAN = 0x01
-AMF_STRING = 0x02
-AMF_OBJECT = 0x03
-AMF_NULL = 0x05
-AMF_OBJECT_END = 0x09
-
 # Other Constants
 AMF_STRING_HEADER_SIZE = 2  # AMF Strings have a 2-byte length header
 AMF_NUMBER_SIZE = 8  # AMF Numbers (doubles) are 8 bytes
@@ -72,25 +59,11 @@ AMF_NUMBER_SIZE = 8  # AMF Numbers (doubles) are 8 bytes
 AMF_BOOLEAN_SIZE = 1  # AMF Booleans are 1 byte
 AMF_PROPERTY_NAME_SIZE = 2  # Property names have a 2-byte length prefix
 
-# RTMP Constants
-RTMP_CHUNK_FORMAT_11_BYTE = 0  # Full 11-byte header
-RTMP_CHUNK_FORMAT_7_BYTE = 1  # 7-byte header
-RTMP_CHUNK_FORMAT_3_BYTE = 2  # 3-byte header
-RTMP_CHUNK_FORMAT_0_BYTE = 3  # No header, reuse previous
-
 # RTMP Message Types
 RTMP_MSG_TYPE_COMMAND = 0x14  # AMF Command (connect, play, etc.)
 RTMP_MSG_TYPE_AUDIO = 0x08  # Audio packet
 RTMP_MSG_TYPE_VIDEO = 0x09  # Video packet
 RTMP_MSG_TYPE_SET_CHUNK_SIZE = 0x01  # Set chunk size
-
-# RTMP Extended Chunk Stream ID Constants
-RTMP_EXTENDED_CHUNK_ID_BYTE_2 = 64  # Base ID for 2-byte chunk stream IDs
-RTMP_EXTENDED_CHUNK_ID_BYTE_3 = 64  # Base ID for 3-byte chunk stream IDs
-RTMP_TWO_BYTE_STREAM_ID_INDICATOR = 0  # Indicator for 2-byte stream ID
-RTMP_THREE_BYTE_STREAM_ID_INDICATOR = 1  # Indicator for 3-byte stream ID
-RTMP_TWO_BYTE_STREAM_ID_SIZE = 1  # Size of extra byte for 2-byte chunk ID
-RTMP_THREE_BYTE_STREAM_ID_SIZE = 2  # Size of extra bytes for 3-byte chunk ID
 
 # RTMP Payload Size Constants
 RTMP_PAYLOAD_HEADER_11_BYTE = 11
@@ -331,8 +304,10 @@ class RTMPServer:
                 if msg_type == RTMP_MSG_TYPE_COMMAND:
                     await self.handle_amf_command(payload, writer)
                 elif msg_type == RTMP_MSG_TYPE_VIDEO:
+                    print("should process video packet")
                     await self.handle_video_packet(payload)
                 elif msg_type == RTMP_MSG_TYPE_AUDIO:
+                    print("should process audio package")
                     await self.handle_audio_packet(payload)
                 elif msg_type == RTMP_MSG_TYPE_SET_CHUNK_SIZE:
                     if len(payload) >= 4:
@@ -484,21 +459,40 @@ class RTMPServer:
             command_name, transaction_id, command_object = self.decode_amf_command(
                 payload
             )
+
+            logging.debug(
+                f"Received command: {command_name}, transaction_id: {transaction_id}"
+            )
+
+            print(f"Command received: '{command_name}', type: {type(command_name)}")
+
+            if isinstance(command_name, bytes):
+                command_name = command_name.decode("utf-8")
+
+            command_name = command_name.strip()
+
             if command_name:
                 logging.info(f"AMF Command Received: {command_name}")
 
                 if command_name == "connect":
                     await self.handle_connect(transaction_id, command_object, writer)
                     # print("should connect")
+                if command_name == "publish":
+                    print("should publish")
+                    await self.handle_publish_response(writer, transaction_id, "test")
                 elif command_name == "createStream":
                     print("should create stream")
-                    await self.handle_create_stream(0, writer)
+                    await self.handle_create_stream(transaction_id, writer, payload)
                 elif command_name == "FCPublish":
                     print("should publish")
-                    await self.handle_publish(
-                        [command_name, transaction_id, command_object], writer
+                    print("payload: ", payload)
+                    print("command_object", command_object)
+                    await self.handle_FCPublish(
+                        [command_name, transaction_id, command_object, "webcam"], writer
                     )
-
+                elif command_name == "releaseStream":
+                    print("should release stream")
+                    await self.handle_release_stream(writer, payload)
                 elif command_name == "play":
                     await self.handle_play(
                         [command_name, transaction_id, command_object], writer
@@ -511,58 +505,80 @@ class RTMPServer:
         except Exception as e:
             logging.error(f"Error parsing AMF command: {e}")
 
-    async def handle_create_stream(self, transaction_id, writer):
-        """
-        Handles the RTMP `createStream` request by sending a proper `_result` response.
-        """
+    async def handle_release_stream(self, writer, amf_payload):
         try:
+            if len(amf_payload) > 1 and isinstance(amf_payload[1], (int, float)):
+                transaction_id = amf_payload[1]
+            else:
+                transaction_id = 1.0  # Default to 1.0 if extraction fails
+
+            logging.info(
+                f"✅ Handling releaseStream request, transaction_id: {transaction_id}"
+            )
+
+            # Build AMF response for releaseStream
+            response = (
+                self.encode_amf0_string("_result")
+                + self.encode_amf0_number(transaction_id)
+                + b"\x05"  # AMF NULL
+            )
+
+            header = (
+                b"\x02"  # Chunk Basic Header
+                + b"\x00\x00\x00"  # Timestamp
+                + struct.pack(">I", len(response))[
+                    -3:
+                ]  # Correct 3-byte length encoding
+                + b"\x14"  # Message Type ID (AMF Command)
+                + b"\x00\x00\x00\x00"  # Message Stream ID
+            )
+
+            writer.write(header + response)
+            await self.drain_and_sleep(writer)
+            logging.info("✅ Sent `_result` for releaseStream.")
+
+        except Exception as e:
+            logging.error(f"❌ Error handling releaseStream: {e}")
+            writer.close()
+            await writer.wait_closed()  # Ensure the writer is properly closed
+
+    async def handle_create_stream(self, transaction_id, writer, amf_payload):
+        try:
+            # Extract the transaction ID safely
+            if len(amf_payload) > 1 and isinstance(amf_payload[1], (int, float)):
+                transaction_id = amf_payload[1]
+            else:
+                transaction_id = 1.0  # Default to 1.0 if extraction fails
+
             logging.info(
                 f"✅ Handling createStream request, transaction_id: {transaction_id}"
             )
 
-            # Construct `_result` response for `createStream`
-            amf_payload = (
-                self.encode_amf0_string("_result")  # AMF0 Command "_result"
-                + self.encode_amf0_number(transaction_id)  # Transaction ID
-                + b"\x05"  # AMF0 NULL (Required!)
-                + self.encode_amf0_number(1)  # Stream ID (Always `1`)
+            stream_id = 1  # Assign stream ID
+
+            # Build AMF response
+            response = (
+                self.encode_amf0_string("_result")
+                + self.encode_amf0_number(transaction_id)
+                + b"\x05"  # AMF NULL
+                + self.encode_amf0_number(stream_id)
             )
 
-            # RTMP Header (Chunk Stream ID 3, Message Type 0x14)
-            create_stream_header = (
-                b"\x03"  # Chunk Basic Header (Format 0, CSID 3)
-                + b"\x00\x00\x00"  # Timestamp
-                + struct.pack(">I", len(amf_payload))[1:4]  # Payload size
-                + b"\x14"  # Message Type ID (0x14 = Command Message)
-                + b"\x00\x00\x00\x00"  # Stream ID (Always 0 for command responses)
+            header = (
+                b"\x02"  # Chunk Basic Header
+                + b"\x00\x00\x00"
+                + struct.pack(">I", len(response))[1:4]
+                + b"\x14"  # Message Type ID for Command Message
+                + b"\x00\x00\x00\x00"
             )
 
-            writer.write(create_stream_header + amf_payload)
-            await writer.drain()
-            logging.info(f"✅ Sent `_result` for createStream, Stream ID: 1.")
+            writer.write(header + response)
+            await self.drain_and_sleep(writer)
+            logging.info(f"✅ Sent `_result` for createStream, Stream ID: {stream_id}.")
 
         except Exception as e:
             logging.error(f"❌ Error handling createStream: {e}")
             writer.close()
-
-    # async def set_chunk_size(self, writer, size=4096):
-    #     """Sends Set Chunk Size message"""
-    #     if not (MIN_CHUNK_SIZE <= size <= MAX_CHUNK_SIZE):
-    #         logging.warning(f"Invalid chunk size requested: {size}")
-    #         return
-
-    #     message = (
-    #         b"\x02"  # Chunk Basic Header (Format 0, CSID 2)
-    #         + b"\x00\x00\x00"  # Timestamp
-    #         + struct.pack(">I", 4)[1:4]  # Payload size (3 bytes)
-    #         + b"\x01"  # Message Type ID (Set Chunk Size)
-    #         + b"\x00\x00\x00\x00"  # Stream ID (always 0 for Set Chunk Size)
-    #         + struct.pack(">I", size)  # Chunk size (4 bytes)
-    #     )
-
-    #     logging.debug(f"Setting chunk size: {size}")
-    #     writer.write(message)
-    #     await writer.drain()
 
     def decode_amf_payload(self, payload):
         """
@@ -917,79 +933,6 @@ class RTMPServer:
         obj += b"\x00\x00\x09"  # **Proper Object End Marker**
         return obj
 
-    import struct
-
-    def result_for_connect(self):
-        """Encodes and returns an RTMP `_result` message for `connect`, triggering `createStream` in FFmpeg."""
-
-        # 1️⃣ RTMP Chunk Basic Header (1 byte)
-        basic_header = b"\x03"  # Format 0, Chunk Stream ID 3 (CSID = 3)
-
-        # 2️⃣ RTMP Message Header (7 bytes)
-        timestamp = b"\x00\x00\x00"  # Always 0 for control messages
-        message_type = b"\x14"  # RTMP Message Type ID for Invoke (_result)
-        message_stream_id = b"\x00\x00\x00\x00"  # Always 0 for control messages
-
-        # 3️⃣ AMF0 Payload (Dynamically Constructed)
-        amf_payload = (
-            b"\x02"
-            + struct.pack(">H", len("_result"))
-            + b"_result"  # AMF0 String: `_result`
-            + b"\x00\x40\x08\x00\x00\x00\x00"  # AMF0 Number: Transaction ID = 1.0
-            + b"\x03"  # AMF0 Object (Start)
-            + b"\x02"
-            + struct.pack(">H", len("fmsVer"))
-            + b"fmsVer"
-            + b"\x02"
-            + struct.pack(">H", len("FMS/3,5,3,888"))
-            + b"FMS/3,5,3,888"
-            + b"\x02"
-            + struct.pack(">H", len("capabilities"))
-            + b"capabilities"
-            + b"\x00\x40\x3f\x00\x00\x00\x00\x00\x00"
-            + b"\x02"
-            + struct.pack(">H", len("level"))
-            + b"level"
-            + b"\x02"
-            + struct.pack(">H", len("status"))
-            + b"status"
-            + b"\x02"
-            + struct.pack(">H", len("code"))
-            + b"code"
-            + b"\x02"
-            + struct.pack(">H", len("NetConnection.Connect.Success"))
-            + b"NetConnection.Connect.Success"
-            + b"\x02"
-            + struct.pack(">H", len("description"))
-            + b"description"
-            + b"\x02"
-            + struct.pack(">H", len("Connection succeeded."))
-            + b"Connection succeeded."
-            + b"\x00\x00\x09"  # AMF0 Object End
-        )
-
-        # 4️⃣ Calculate Message Length Dynamically
-        message_length = struct.pack(">I", len(amf_payload))[
-            1:
-        ]  # 3 bytes for RTMP header
-
-        # Combine All Parts Into One RTMP Packet
-        result_packet = (
-            basic_header
-            + timestamp
-            + message_length
-            + message_type
-            + message_stream_id
-            + amf_payload
-        )
-
-        # Debugging: Print the hex dump to verify structure before sending
-        print(
-            f"🔍 Debug `_result` for Connect: {result_packet.hex()} (Length: {len(result_packet)})"
-        )
-
-        return result_packet
-
     def encode_amf0_onstatus_publish(self):
         """Encodes an AMF0 'onStatus' response for 'NetStream.Publish.Start'."""
         properties = {
@@ -1023,37 +966,6 @@ class RTMPServer:
     def stream_begin(self, stream_id=3):
         """Encodes and returns an RTMP Stream Begin (0x04) message in the correct format for FFmpeg."""
 
-        # # 1️⃣ RTMP Chunk Basic Header (1 byte)
-        # basic_header = b"\x02"  # Format 0, Chunk Stream ID 2 (CSID = 2)
-
-        # # 2️⃣ RTMP Message Header (7 bytes)
-        # timestamp = b"\x00\x00\x00"  # Always 0 for control messages
-        # message_length = b"\x00\x06"  # Payload is always 6 bytes (2-byte event type + 4-byte stream ID)
-        # message_type = (
-        #     b"\x04"  # RTMP Message Type ID for User Control Message (Stream Begin)
-        # )
-        # message_stream_id = b"\x00\x00\x00\x00"  # Always 0 for control messages
-
-        # # 3️⃣ RTMP Payload (6 bytes: Event Type + Stream ID)
-        # payload = struct.pack(
-        #     ">HI", 0, stream_id
-        # )  # 2-byte Event Type (Stream Begin) + 4-byte Stream ID
-
-        # # Combine all parts into a single RTMP packet
-        # stream_begin_packet = (
-        #     basic_header
-        #     + timestamp
-        #     + message_length
-        #     + message_type
-        #     + message_stream_id
-        #     + payload
-        # )
-
-        # # Debugging: Print the hex dump to verify structure before sending
-        # print(
-        #     f"🔍 Debug Stream Begin: {stream_begin_packet.hex()} (Length: {len(stream_begin_packet)})"
-        # )
-
         # return stream_begin_packet
         return (
             b"\x02"  # Chunk Basic Header (Format 0, CSID 2)
@@ -1063,91 +975,6 @@ class RTMPServer:
             + b"\x00\x00\x00\x00"  # Always 0 for control messages
             + struct.pack(">HI", 0, stream_id)  # Event Type (0) + Stream ID
         )
-
-    def encode_set_chunk_size(self, size=4096):
-        """Encodes the Set Chunk Size message."""
-        return (
-            b"\x02"
-            + b"\x00\x00\x00"
-            + b"\x00\x04"
-            + b"\x01"
-            + b"\x00\x00\x00\x00"
-            + struct.pack(">I", size)
-        )
-
-    def encode_window_acknowledgment_size(self, size=5000000):
-        """Encodes the Window Acknowledgment Size message."""
-        return (
-            b"\x02"
-            + b"\x00\x00\x00"
-            + b"\x00\x04"
-            + b"\x05"
-            + b"\x00\x00\x00\x00"
-            + struct.pack(">I", size)
-        )
-
-    def encode_set_peer_bandwidth(self, size=5000000, limit_type=2):
-        """Encodes the Set Peer Bandwidth message."""
-        return (
-            b"\x02"
-            + b"\x00\x00\x00"
-            + b"\x00\x05"
-            + b"\x06"
-            + b"\x00\x00\x00\x00"
-            + struct.pack(">I", size)
-            + bytes([limit_type])
-        )
-
-    def encode_connect_result(self):
-        """Encodes the _result response for NetConnection.Connect.Success."""
-        payload = (
-            self.encode_amf0_string("_result")  # Command
-            + self.encode_amf0_number(1.0)  # Transaction ID
-            + self.encode_amf_object(
-                {"fmsVer": "FMS/3.5", "capabilities": 31}
-            )  # Server properties
-            + self.encode_amf_object(
-                {  # Response properties
-                    "level": "status",
-                    "code": "NetConnection.Connect.Success",
-                    "description": "Connection succeeded.",
-                }
-            )
-        )
-
-        header = (
-            b"\x03"  # Chunk Type 0, Chunk Stream ID 3
-            + b"\x00\x00\x00"  # Timestamp
-            + struct.pack(">I", len(payload))[1:]  # Payload size (3 bytes)
-            + b"\x14"  # Message Type (Invoke)
-            + b"\x00\x00\x00\x00"  # Message Stream ID (always 0 for control messages)
-        )
-
-        return header + payload
-
-    def encode_onstatus(self):
-        """Encodes the onStatus message after successful connection."""
-        payload = (
-            self.encode_amf0_string("onStatus")  # Command
-            + self.encode_amf0_number(0.0)  # Transaction ID
-            + self.encode_amf_object(
-                {  # Response properties
-                    "level": "status",
-                    "code": "NetConnection.Connect.Success",
-                    "description": "Connection established successfully.",
-                }
-            )
-        )
-
-        header = (
-            b"\x02"  # Chunk Type 0, Chunk Stream ID 2
-            + b"\x00\x00\x00"  # Timestamp
-            + struct.pack(">I", len(payload))[1:]  # Payload size (3 bytes)
-            + b"\x14"  # Message Type (Invoke)
-            + b"\x00\x00\x00\x00"  # Message Stream ID (always 0 for control messages)
-        )
-
-        return header + payload
 
     def encode_amf0_onstatus(self):
         """Encodes the RTMP `onStatus` event using AMF0 format."""
@@ -1213,107 +1040,37 @@ class RTMPServer:
 
         return onstatus_packet
 
-    async def handle_connect3(self, transaction_id, command_object, writer):
-        """Handles the RTMP `connect` command from the client."""
-
-        # 1️⃣ Send Set Chunk Size (4096 bytes)
-        # writer.write(self.encode_set_chunk_size())
-
-        # 2️⃣ Send Window Acknowledgment Size (5000000 bytes)
-        writer.write(self.encode_window_acknowledgment_size())
-
-        # 3️⃣ Send Set Peer Bandwidth (5000000 bytes, dynamic mode)
-        writer.write(self.encode_set_peer_bandwidth())
-
-        # # 4️⃣ Send _result for NetConnection.Connect.Success
-        writer.write(self.encode_connect_result())
-
-        # # 5️⃣ Send onStatus event
-        writer.write(self.encode_onstatus())
-
-        await writer.drain()
-
-        print("✅ Sent all responses for NetConnection.Connect.Success")
-
-    async def drain_and_sleep(self, writer):
-        await writer.drain()
-        await asyncio.sleep(0.1)
-
-    async def handle_connect10(self, transaction_id, command_object, writer):
-        """Sends the required RTMP handshake messages to ensure FFmpeg responds with `createStream` (0x14)."""
-
-        # 1️⃣ Send Set Chunk Size
-        # set_chunk_size = b'\x02\x00\x00\x00\x00\x00\x00\x04\x00\x00\x10\x00'
-        # set_chunk_size =
-        writer.write(self.set_chunk_size(4096))
-        await self.drain_and_sleep(writer)
-        # print("✅ Sent Set Chunk Size.")
-
-        # 2️⃣ Send Window Acknowledgment Size
-        # window_ack_size = b'\x02\x00\x00\x00\x00\x00\x00\x04\x00\x00\x0f\xa0'
-        window_ack_size = self.window_ack_size(2500000)
-        writer.write(window_ack_size)
-        await self.drain_and_sleep(writer)
-        print("✅ Sent Window Acknowledgment Size.")
-
-        # 3️⃣ Send Set Peer Bandwidth
-        set_peer_bw = self.set_peer_bandwidth(2500000)
-        # set_peer_bw = b'\x06\x00\x00\x00\x00\x00\x00\x05\x00\x00\x0f\xa0\x02'
-        writer.write(set_peer_bw)
-        await self.drain_and_sleep(writer)
-        print("✅ Sent Set Peer Bandwidth.")
-
-        # # Send Stream Begin (Most clients expect stream_id = 3, but some use 1)
-        # stream_begin_message = self.stream_begin(stream_id=3)
-        # writer.write(stream_begin_message)
-        # Send Stream Begin for Stream ID 1
-        writer.write(self.stream_begin(0))
-        await self.drain_and_sleep(writer)
-        print("✅ Sent Stream Begin (Stream ID = 0).")
-
-        # 1️⃣ Send Set Chunk Size
-        # set_chunk_size = b'\x02\x00\x00\x00\x00\x00\x00\x04\x00\x00\x10\x00'
-        set_chunk_size = self.set_chunk_size(128)
-        writer.write(set_chunk_size)
-        await self.drain_and_sleep(writer)
-        print("✅ Sent Set Chunk Size.")
-
-        # 4️⃣ Send `_result` for `connect`
-        transaction_id = 1.0
-        tc_url = "rtmp://127.0.0.1:1935/live/test"
-
-        # ✅ Step 4: Generate the `_result` payload
-        amf_payload = self.encode_amf0_result(transaction_id, tc_url)
-
-        # ✅ Step 5: Construct RTMP header for `_result`
-        connect_header = (
-            b"\x02"  # Chunk Basic Header (Format 0, CSID 2)
-            + b"\x00\x00\x00"  # Timestamp (0)
-            + struct.pack(">I", len(amf_payload))[1:4]  # Payload size (3 bytes)
-            + b"\x14"  # Message Type ID (0x14 = Command Message)
-            + b"\x00\x00\x00\x00"  # Message Stream ID (4 bytes, always 0 for connect)
+    def send_setdataframe(self, writer):
+        """Sends @setDataFrame to establish metadata for the stream."""
+        payload = (
+            self.encode_amf0_string("@setDataFrame")
+            + self.encode_amf0_string("onMetaData")
+            + self.encode_amf0_object({"encoder": "Lavf61.9.106", "filesize": 0})
         )
 
-        # ✅ Step 6: Concatenate Header + Payload
-        full_result = connect_header + amf_payload
+        header = (
+            b"\x02"  # Chunk Basic Header
+            + b"\x00\x00\x00"
+            + struct.pack(">I", len(payload))[1:4]
+            + b"\x12"  # Message Type ID (0x12 = Data Message)
+            + b"\x00\x00\x00\x01"  # Stream ID
+        )
 
-        # ✅ Step 7: Log and send response
-        logging.debug(f"RTMP _result Response Hex: {full_result.hex()}")
+        return header + payload
 
-        # # Send `onStatus` event to confirm successful connection
-        onstatus_message = self.send_onstatus()
-        writer.write(onstatus_message)
-        await self.drain_and_sleep(writer)
+    def send_onbwdone(self, writer):
+        """Sends the RTMP `onBWDone` event, required for FFmpeg to proceed to publish."""
 
-        # ✅ Send onBWDone() after NetConnection.Connect.Success
+        # ✅ Construct the AMF0 `onBWDone` payload
         bw_done_payload = (
             self.encode_amf0_string("onBWDone")  # AMF0 String "onBWDone"
             + self.encode_amf0_number(
                 0
             )  # Transaction ID (always 0 for system messages)
-            + b"\x05"  # AMF0 NULL (required)
+            + b"\x05"  # AMF0 NULL (Required!)
         )
 
+        # ✅ Construct the RTMP Header for `onBWDone`
         bw_done_header = (
             b"\x02"  # Chunk Basic Header (Format 0, CSID 2)
             + b"\x00\x00\x00"  # Timestamp (0)
@@ -1322,184 +1079,169 @@ class RTMPServer:
             + b"\x00\x00\x00\x00"  # Message Stream ID (always 0 for control messages)
         )
 
-        writer.write(bw_done_header + bw_done_payload)
-        await self.drain_and_sleep(writer)
-        print("✅ Sent onBWDone()")
+        full_bw_done = bw_done_header + bw_done_payload
+
+        logging.debug(f"RTMP onBWDone Response Hex: {full_bw_done.hex()}")
+        return full_bw_done
+
+    async def drain_and_sleep(self, writer):
+        await writer.drain()
+        await asyncio.sleep(0.1)
+
+    def send_release_stream(self, transaction_id, app_name):
+        release_stream_payload = (
+            self.encode_amf0_string("releaseStream")
+            + self.encode_amf0_number(transaction_id + 1)
+            + b"\x05"  # AMF0 NULL
+            + self.encode_amf0_string(app_name)  # Stream Name
+        )
+        release_stream_header = (
+            b"\x02"
+            + b"\x00\x00\x00"
+            + struct.pack(">I", len(release_stream_payload))[1:4]
+            + b"\x14"
+            + b"\x00\x00\x00\x00"
+        )
+        return release_stream_header + release_stream_payload
 
     async def handle_connect(self, transaction_id, command_object, writer):
         try:
-            print("Handling connect")
-            logging.info(f"Client connecting with transaction_id: {transaction_id}")
+            # Prevent duplicate connect commands
+            if hasattr(self, "client_connected") and self.client_connected:
+                logging.warning("Duplicate `connect` command received, ignoring.")
+                return
 
-            app_name = command_object.get("app", "live")
-            tc_url = command_object.get("tcUrl", "rtmp://127.0.0.1:1935/live/test")
-            tc_url += "/test"
-            logging.info(f"App: {app_name}, tcUrl: {tc_url}")
+            self.client_connected = True  # Mark session as active
+            logging.info(f"Handling RTMP connect, transaction_id: {transaction_id}")
 
-            # ✅ Step 1: Send Set Chunk Size (0x01) IMMEDIATELY
-            chunk_size_msg = self.set_chunk_size(4096)
-            logging.debug(f"RTMP Chunk Size Message Hex: {chunk_size_msg.hex()}")
-            writer.write(chunk_size_msg)
-            await self.drain_and_sleep(writer)
-            logging.info("✅ Sent Set Chunk Size.")
-
-            # ✅ Step 2: Send Window Acknowledgment Size (0x05)
-            window_ack_msg = self.window_ack_size(2500000)
-            logging.debug(f"RTMP Window Ack Message Hex: {window_ack_msg.hex()}")
-            writer.write(window_ack_msg)
-            await self.drain_and_sleep(writer)
-            logging.info("✅ Sent Window Acknowledgment Size.")
-
-            # ✅ Step 3: Send Set Peer Bandwidth (0x06)
-            peer_bw_msg = self.set_peer_bandwidth(2500000)
-            logging.debug(f"RTMP Peer Bandwidth Message Hex: {peer_bw_msg.hex()}")
-            writer.write(peer_bw_msg)
-            await self.drain_and_sleep(writer)
-            logging.info("✅ Sent Set Peer Bandwidth.")
-
-            # ✅ Step 4: Send `_result` (NetConnection.Connect.Success) with CORRECT format
-            full_result = self.build_result_packet(transaction_id, tc_url)
-
-            logging.debug(f"RTMP _result Response Hex: {full_result.hex()}")
-            writer.write(full_result)
-            await self.drain_and_sleep(
-                writer
-            )  # Ensure the data is sent before continuing
-            logging.info("✅ Sent NetConnection.Connect.Success.")
-
-            # ✅ Step 5: Send `onStatus` event to confirm successful connection
-            status_payload = self.encode_amf0_onstatus()
-
-            status_header = (
-                b"\x02"
-                + b"\x00\x00\x00"
-                + struct.pack(">I", len(status_payload))[1:4]
-                + b"\x14"
-                + b"\x00\x00\x00\x00"
-            )
-
-            full_status = status_header + status_payload
-            logging.debug(f"RTMP onStatus Response Hex: {full_status.hex()}")
-            writer.write(full_status)
-            await self.drain_and_sleep(writer)
-            logging.info("✅ Sent onStatus.")
-
-            # ✅ Step 6: Send Stream Begin (0x04)
-            stream_begin_msg = self.stream_begin()
-            logging.debug(f"RTMP Stream Begin (0x04) Hex: {stream_begin_msg.hex()}")
-            writer.write(stream_begin_msg)
-            await self.drain_and_sleep(writer)
-            logging.info("✅ Sent Stream Begin.")
-
-            # ✅ Step 7: Send NetStream.Publish.Start
-            await self.send_publish_start(writer)
-            await self.drain_and_sleep(writer)
-
-            # ✅ Step 6: Send `onBWDone` (Needed for FFmpeg)
-            bw_done_payload = (
-                self.encode_amf0_string("onBWDone")
-                + self.encode_amf0_number(0)  # Transaction ID
-                + b"\x05"  # AMF0 NULL
-            )
-            bw_done_header = (
-                b"\x02"  # Chunk Basic Header
-                + b"\x00\x00\x00"
-                + struct.pack(">I", len(bw_done_payload))[1:4]
-                + b"\x14"
-                + b"\x00\x00\x00\x00"
-            )
-            writer.write(bw_done_header + bw_done_payload)
-            await self.drain_and_sleep(writer)
-            logging.info("✅ Sent onBWDone.")
-
-            # ✅ Step 7: Send Stream Begin (0x04)
-            stream_id = 1
-            message = (
-                b"\x02"  # Chunk Basic Header (Format 0, CSID 2)
-                + b"\x00\x00\x00"  # Timestamp
-                + b"\x00\x04"  # Payload size (4 bytes)
-                + b"\x04"  # Message Type ID (User Control Message)
-                + struct.pack(
-                    ">HI", 0, stream_id
-                )  # Event Type 0 = Stream Begin, Stream ID
-            )
-
-            writer.write(message)
-            await self.drain_and_sleep(writer)
-            logging.info("✅ Sent Stream Begin (0x04).")
-
-            # ✅ Step 8: Wait for `createStream` from FFmpeg
-            logging.info("Waiting for createStream command...")
-
-            # ✅ Step 6: Send Stream Begin (0x04)
-            stream_id = 1
-            message = (
-                b"\x02"  # Chunk Basic Header (Format 0, CSID 2)
-                + b"\x00\x00\x00"  # Timestamp
-                + b"\x00\x04"  # Payload size (4 bytes)
-                + b"\x04"  # Message Type ID (User Control Message)
-                + struct.pack(
-                    ">HI", 0, stream_id
-                )  # Event Type 0 = Stream Begin, Stream ID
-            )
-
-            # ✅ Step 6: Send `releaseStream` (Needed for FFmpeg)
-            release_stream_payload = (
-                self.encode_amf0_string("releaseStream")
-                + self.encode_amf0_number(transaction_id + 1)
-                + b"\x05"  # AMF0 NULL
-                + self.encode_amf0_string("live")  # Stream Name
-            )
-            release_stream_header = (
-                b"\x02"
-                + b"\x00\x00\x00"
-                + struct.pack(">I", len(release_stream_payload))[1:4]
-                + b"\x14"
-                + b"\x00\x00\x00\x00"
-            )
-            writer.write(release_stream_header + release_stream_payload)
-            await self.drain_and_sleep(writer)
-            logging.info("✅ Sent releaseStream.")
-
-            # # ✅ Step 7: Send `FCPublish`
-            # fc_publish_payload = (
-            #     self.encode_amf0_string("FCPublish")
-            #     + self.encode_amf0_number(transaction_id + 2)
-            #     + b"\x05"  # AMF0 NULL
-            #     + self.encode_amf0_string("live")  # Stream Name
+            # # Extract App Name and Stream URL
+            # app_name = command_object.get("app", "live")
+            # tc_url = command_object.get(
+            #     "tcUrl", f"rtmp://{self.host}:{self.port}/{app_name}"
             # )
-            # fc_publish_header = (
+            # logging.info(f"App: {app_name}, tcUrl: {tc_url}")
+
+            # # ✅ Step 1: Send Set Chunk Size (4096)
+            # writer.write(self.set_chunk_size(4096))
+            # await self.drain_and_sleep(writer)
+            # logging.info("✅ Sent Set Chunk Size (4096).")
+
+            # # ✅ Step 2: Send Window Acknowledgment Size
+            # writer.write(self.window_ack_size(2500000))
+            # await self.drain_and_sleep(writer)
+            # logging.info("✅ Sent Window Acknowledgment Size.")
+
+            # # ✅ Step 3: Send Set Peer Bandwidth
+            # writer.write(self.set_peer_bandwidth(2500000))
+            # await self.drain_and_sleep(writer)
+            # logging.info("✅ Sent Set Peer Bandwidth.")
+
+            # # ✅ Step 4: Send `_result` for NetConnection.Connect.Success
+            # writer.write(self.build_result_packet(transaction_id, tc_url))
+            # await self.drain_and_sleep(writer)
+            # logging.info("✅ Sent NetConnection.Connect.Success.")
+
+            # # ✅ Step 6: Send Stream Begin (0x04)
+            # writer.write(self.stream_begin(1))  # Stream ID 1
+            # await self.drain_and_sleep(writer)
+            # logging.info("✅ Sent Stream Begin (0x04).")
+
+            # # ✅ Step 7: Send NetStream.Publish.Start
+            # await self.send_publish_start(writer)
+
+            # # ✅ Step 8: Send `onBWDone`
+            # writer.write(self.send_onbwdone(writer))
+            # await self.drain_and_sleep(writer)
+            # logging.info("✅ Sent onBWDone.")
+
+            #  # ✅ Step 8.5: Send Set Chunk Size (128)
+            # writer.write(self.set_chunk_size(128))
+            # await self.drain_and_sleep(writer)
+            # logging.info("✅ Sent Set Chunk Size (128).")
+
+            # # ✅ Step 9: Send `releaseStream` (Needed for FFmpeg)
+            # release_stream_payload = (
+            #     self.encode_amf0_string("releaseStream")
+            #     + self.encode_amf0_number(transaction_id + 1)
+            #     + b"\x05"  # AMF0 NULL
+            #     + self.encode_amf0_string(app_name)  # Stream Name
+            # )
+            # release_stream_header = (
             #     b"\x02"
             #     + b"\x00\x00\x00"
-            #     + struct.pack(">I", len(fc_publish_payload))[1:4]
+            #     + struct.pack(">I", len(release_stream_payload))[1:4]
             #     + b"\x14"
             #     + b"\x00\x00\x00\x00"
             # )
-            # writer.write(fc_publish_header + fc_publish_payload)
-            # await self.drain_and_sleep()
-            # logging.info("✅ Sent FCPublish.")
+            # writer.write(release_stream_header + release_stream_payload)
+            # await self.drain_and_sleep(writer)
+            # logging.info("✅ Sent releaseStream.")
 
-            # # ✅ Step 8: Send Stream Begin
-            # stream_id = 1
-            # message = (
-            #     b"\x02"  # Chunk Basic Header (Format 0, CSID 2)
-            #     + b"\x00\x00\x00"  # Timestamp
-            #     + b"\x00\x04"  # Payload size (4 bytes)
-            #     + b"\x04"  # Message Type ID (User Control Message)
-            #     + struct.pack(">HI", 0, stream_id)  # Event Type 0 = Stream Begin, Stream ID
-            # )
-            # writer.write(message)
-            # await self.drain_and_sleep()
-            # logging.info("✅ Sent Stream Begin.")
+            # # ✅ Step 10: Send @setDataFrame (Metadata)
+            # writer.write(self.send_setdataframe(writer))
+            # await self.drain_and_sleep(writer)
+            # logging.info("✅ Sent @setDataFrame (Metadata).")
 
-        # # ✅ Handle `createStream`
-        # await self.handle_create_stream(transaction_id, writer)
+            # # ✅ Step 11: Wait for `createStream` from FFmpeg
+            # logging.info("🔄 Waiting for createStream command...")
+
+            # self.client_connected = True
+            # logging.info(f"Handling RTMP connect, transaction_id: {transaction_id}")
+
+            # ✅ Extract App Name and tcUrl
+            app_name = command_object.get("app", "live")
+            tc_url = command_object.get(
+                f"tcUrl", f"rtmp://{self.host}:{self.port}/{app_name}"
+            )
+
+            # ✅ Step 1: Send Set Chunk Size (4096)
+            writer.write(self.set_chunk_size(4096))
+            await self.drain_and_sleep(writer)
+
+            # ✅ Step 2: Send Window Acknowledgment Size
+            writer.write(self.window_ack_size(2500000))
+            await self.drain_and_sleep(writer)
+
+            # ✅ Step 3: Send Set Peer Bandwidth
+            writer.write(self.set_peer_bandwidth(2500000))
+            await self.drain_and_sleep(writer)
+
+            # ✅ Step 4: Send `_result` for NetConnection.Connect.Success
+            writer.write(self.build_result_packet(transaction_id, tc_url))
+            await self.drain_and_sleep(writer)
+
+            # ✅ Step 5: Send `onStatus`
+            writer.write(self.send_onstatus())
+            await self.drain_and_sleep(writer)
+
+            # ✅ Step 6: Send onBWDone BEFORE Set Chunk Size 128
+            writer.write(self.send_onbwdone(writer))
+            await self.drain_and_sleep(writer)
+
+            # ✅ Step 7: Send Set Chunk Size (128)
+            writer.write(self.set_chunk_size(128))
+            await self.drain_and_sleep(writer)
+
+            # ✅ Step 8: Send Stream Begin 0 BEFORE releaseStream
+            writer.write(self.stream_begin(0))
+            await self.drain_and_sleep(writer)
+
+            # ✅ Step 9: Send releaseStream('webcam')
+            writer.write(self.send_release_stream(transaction_id, app_name))
+            await self.drain_and_sleep(writer)
+
+            # ✅ Step 11: Send @setDataFrame Metadata
+            writer.write(self.send_setdataframe(writer))
+            await self.drain_and_sleep(writer)
+
+            # ✅ Step 12: Wait for `createStream`
+            logging.info("Waiting for createStream command...")
 
         except Exception as e:
-            logging.error(f"Error handling RTMP connect: {e}")
+            logging.error(f"❌ Error handling RTMP connect: {e}")
             writer.close()
 
-    async def handle_publish(self, decoded_values, writer):
+    async def handle_FCPublish(self, decoded_values, writer):
         """
         Handles RTMP 'publish' requests properly.
         """
@@ -1508,58 +1250,87 @@ class RTMPServer:
                 logging.error("Invalid publish command format.")
                 return
 
-            # Extract the transaction ID and stream key
-            transaction_id = (
-                decoded_values[1] if len(decoded_values) > 1 else 0.0
-            )  # Ensure it's a double
-            stream_key = decoded_values[2] if len(decoded_values) > 2 else "default"
+            transaction_id = decoded_values[1] if len(decoded_values) > 1 else 0.0
+            stream_key = (
+                decoded_values[3] if len(decoded_values) > 3 else "default"
+            )  # ✅ Extract correct index
 
-            logging.info(f"Publishing stream: key={stream_key}")
+            print("decoded values: ", decoded_values)
+            logging.info(f"📡 Publishing stream: key={stream_key}")
 
-            self.streams[stream_key] = {"status": "publishing"}  # Store stream info
+            # ✅ Store stream info
+            self.streams[stream_key] = {"status": "publishing"}
 
-            # ✅ Correct RTMP Response for NetStream.Publish.Start
+            # ✅ Validate Stream Key (Ensure it's not None)
+            if not stream_key or stream_key == "None":
+                logging.error("❌ Stream key is None! Possible AMF decoding issue.")
+                return
+
+            # ✅ Send NetStream.Publish.Start response
             response_body = (
-                b"\x02"
-                + struct.pack(">H", len("_result"))
-                + b"_result"  # AMF String "_result"
-                + b"\x00"
-                + struct.pack(
-                    ">d", transaction_id
-                )  # AMF Number (Double) for Transaction ID
-                + b"\x03"  # AMF Object Start
-                + b"\x00\x05level"
-                + b"\x02"
-                + struct.pack(">H", len("status"))
-                + b"status"
-                + b"\x00\x04code"
-                + b"\x02"
-                + struct.pack(">H", len("NetStream.Publish.Start"))
-                + b"NetStream.Publish.Start"
-                + b"\x00\x0Bdescription"
-                + b"\x02"
-                + struct.pack(">H", len("Publishing stream started"))
-                + b"Publishing stream started"
-                + b"\x00\x00\x09"  # End Object
+                self.encode_amf0_string("onStatus")
+                + self.encode_amf0_number(transaction_id)
+                + b"\x05"  # AMF0 NULL (Required!)
+                + self.encode_amf0_object(
+                    {
+                        "level": "status",
+                        "code": "NetStream.Publish.Start",
+                        "description": f"Publishing stream started for key {stream_key}.",
+                    }
+                )
             )
 
-            # ✅ RTMP Header (Fixed Stream ID)
             response_header = (
                 b"\x02"  # Chunk Basic Header (Format 0, CSID 2)
                 + b"\x00\x00\x00"  # Timestamp
-                + struct.pack(">I", len(response_body))[1:4]  # Payload size (3 bytes)
-                + b"\x14"  # Message Type ID (0x14 = Command Message)
-                + struct.pack("<I", 1)  # **Little-endian Stream ID (fix)**
+                + struct.pack(">I", len(response_body))[1:4]  # Payload size
+                + b"\x14"  # Message Type ID (Command Message)
+                + struct.pack("<I", 1)  # Little-endian Stream ID
             )
 
             response = response_header + response_body
             writer.write(response)
-            await writer.drain()
+            await self.drain_and_sleep(writer)
 
-            logging.info(f"Stream '{stream_key}' successfully published.")
+            # ✅ Step 5: Send `onStatus` event
+            writer.write(self.send_onstatus())
+            await self.drain_and_sleep(writer)
+            logging.info("✅ Sent onStatus.")
+
+            logging.info(f"✅ Stream '{stream_key}' successfully published.")
 
         except Exception as e:
-            logging.error(f"Error handling publish request: {e}")
+            logging.error(f"❌ Error handling publish request: {e}")
+
+    async def handle_publish_response(self, writer, transaction_id, stream_key):
+        """Handles `publish` command from the client."""
+        logging.info(f"✅ Handling publish request for stream: {stream_key}")
+
+        # Acknowledge the publish command
+        response = (
+            self.encode_amf0_string("onStatus")
+            + self.encode_amf0_number(transaction_id)
+            + b"\x05"  # AMF0 NULL
+            + self.encode_amf0_object(
+                {
+                    "level": "status",
+                    "code": "NetStream.Publish.Start",
+                    "description": f"Stream {stream_key} is now published.",
+                }
+            )
+        )
+
+        header = (
+            b"\x02"
+            + b"\x00\x00\x00"
+            + struct.pack(">I", len(response))[1:4]
+            + b"\x14"
+            + b"\x00\x00\x00\x01"  # Stream ID
+        )
+
+        writer.write(header + response)
+        await self.drain_and_sleep(writer)
+        logging.info(f"✅ Sent NetStream.Publish.Start for {stream_key}.")
 
     async def handle_video_packet(self, payload):
         """
